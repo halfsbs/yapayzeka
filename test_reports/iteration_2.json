@@ -1,0 +1,57 @@
+{
+  "summary": "Backend testing for Yapay Zeka IPTV admin extension. Added new pytest suite covering settings, VIP plans CRUD, crypto wallets CRUD, ads CRUD, ad visibility (user vs admin/VIP), channel CRUD with hidden flow, user block (login + token), grant/revoke VIP-by-days with VIP-stream gating, admin stats, sensitive-leak guards, and re-sync override preservation. 26/27 tests pass. ONE real backend bug found: re-sync does NOT preserve channel NAME override (other overrides like hidden/category/vip are preserved correctly). Admin role restored via mongo at session start.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/admin/sources/{id}/sync (sync_source helper, server.py:308-326)",
+        "issue": "Name override is LOST after re-sync. sync_source builds overrides dict keyed by current channel name (`{c['name']: c for c in existing}`), then looks up by the freshly-parsed M3U name. After an admin rename, the stored doc's name no longer matches the M3U name, so the override is never re-applied and the name reverts to the M3U value. hidden/category/vip overrides still work because they don't change the lookup key. Fix: store the original M3U name (e.g. `original_name`) on insert/parse and key overrides dict by that field. Then preserve name_overridden + name like the others. Validated end-to-end against https://iptv-org.github.io/iptv/countries/tr.m3u — explicit user requirement in the review request.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "GET /api/admin/channels",
+        "issue": "Hard limit of 5000 documents with no pagination, no source_id filter, no offset/skip. With user-added IPTV providers DB already holds ~900K channels — newly added channels can be invisible to admin UI. Recommend: add `source_id`, `hidden`, pagination (`skip`, `limit`) query params; return total count."
+      },
+      {
+        "endpoint": "startup/shutdown hooks (server.py:849-856)",
+        "issue": "Uses deprecated FastAPI @app.on_event hooks (warning at startup). Migrate to lifespan context manager."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iptv_admin_features.py",
+    "/app/backend/tests/test_iptv_backend.py",
+    "/app/test_reports/pytest/admin_features.xml"
+  ],
+  "action_items": [
+    "Fix sync_source name-override preservation: store original M3U name on each channel doc and key the overrides dict by that field (server.py around lines 278-325). After fix, re-run /app/backend/tests/test_iptv_admin_features.py::test_resync_preserves_name_override.",
+    "Add pagination + source_id filter to GET /api/admin/channels (and a total count) to support large M3U sources.",
+    "Migrate @app.on_event('startup'/'shutdown') to FastAPI lifespan context manager (deprecation)."
+  ],
+  "critical_code_review_comments": [
+    "sync_source uses name-based override lookup that breaks once a channel is renamed; pair with a stable original_name (or tvg-id) field to make all overrides idempotent across re-syncs.",
+    "admin_list_channels caps at 5000 and lacks source_id/hidden filter + pagination — UI can become inconsistent with very large playlists already imported (DB now has >900K channels from real M3U sources).",
+    "VIP-by-days correctly stacks: grant adds to existing vip_until if still in future, otherwise starts from now. Validated.",
+    "Blocked user is blocked at both login (401/403) and at /auth/me with an existing JWT (403) — good.",
+    "Settings endpoint correctly hides ads for admin/VIP users regardless of ads_enabled.",
+    "/api/channels and /api/admin/sources do not leak stream_url, stream_url_enc, source_id, url, or url_enc — verified by tests."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iptv_admin_features.py (created)",
+    "/app/test_reports/iteration_2.json (created)",
+    "/app/test_reports/pytest/admin_features.xml (generated)"
+  ],
+  "success_rate": {"backend": "96.3% (26/27)", "frontend": "N/A - backend only"},
+  "seed_data_creation": "Created a fresh test user via /api/auth/register (testuser_<ts>/pass1234). Created and deleted three temporary M3U sources pointing at https://iptv-org.github.io/iptv/countries/tr.m3u and one BTC crypto wallet, one VIP plan (TEST_2_Aylik), and one ad (TEST_AD_1) — all cleaned up at end of their tests. Admin role/blocked=false restored via mongo at session start (autouse fixture).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Two backend test files now: /app/backend/tests/test_iptv_backend.py (original core flows) and /app/backend/tests/test_iptv_admin_features.py (new admin extension). The latter uses pymongo directly to (a) restore admin role at session start and (b) sidestep the 5000-row /admin/channels limit when verifying TR M3U re-sync (DB currently holds ~900K real channels). Only failure remaining is test_resync_preserves_name_override which exposes a real bug in sync_source name-override logic.",
+  "rca_of_issue": "Reproduction: 1) POST /api/admin/sources {name: 'X', url: TR_M3U}. 2) POST /api/admin/sources/{id}/sync — channels populated. 3) Pick any channel c1 with M3U name N1. 4) PATCH /api/admin/channels/{c1.id} {name: 'CUSTOM'} → DB doc name='CUSTOM', name_overridden=true. 5) POST /api/admin/sources/{id}/sync. Expected: doc name stays 'CUSTOM'. Actual: doc name reverts to N1. RCA: in server.py:311 `overrides = {c['name']: c for c in existing}` uses the CURRENT (renamed) name as key. parse_m3u then returns new docs with name=N1; `overrides.get(N1)` returns None because the key is 'CUSTOM'. So the name_overridden branch (lines 323-325) is never hit. Mitigation: persist `original_name` on every parsed channel; key overrides dict by `original_name`; in the for-loop, compare against the freshly-parsed M3U name. hidden/category/vip overrides also depend on the same lookup so they only worked accidentally when the admin didn't rename — fixing the key will make all overrides robust."
+}
