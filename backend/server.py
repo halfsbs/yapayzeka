@@ -321,15 +321,34 @@ async def sync_source(source: dict) -> int:
         url = fernet.decrypt(source["url_enc"].encode()).decode()
     except Exception:
         return 0
+
     try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as ac:
+        async with httpx.AsyncClient(
+            timeout=60.0,
+            follow_redirects=True,
+            headers={
+                "User-Agent": "VLC/3.0.20 LibVLC/3.0.20"
+            }
+        ) as ac:
             r = await ac.get(url)
+
+            logger.info(f"M3U STATUS = {r.status_code}")
+            logger.info(f"M3U SIZE = {len(r.text)}")
+
+            if len(r.text) > 0:
+                logger.info(r.text[:1000])
+
             r.raise_for_status()
             text = r.text
+
     except Exception as e:
         logger.error(f"Failed to fetch M3U {source['id']}: {e}")
         return 0
+
     new_channels = parse_m3u(text, source["id"])
+
+    logger.info(f"PARSED CHANNELS = {len(new_channels)}")
+
     # Keep admin edits across re-syncs. Match by original_name (M3U parsed name).
     existing = await db.channels.find({"source_id": source["id"]}, {"_id": 0}).to_list(50000)
     overrides: dict = {}
