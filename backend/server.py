@@ -340,13 +340,16 @@ async def sync_source(source: dict) -> int:
             r.raise_for_status()
             text = r.text
 
+        logger.info("STARTING PARSE")
+
+        new_channels = parse_m3u(text, source["id"])
+
+        logger.info("PARSE FINISHED")
+        logger.info(f"PARSED CHANNELS = {len(new_channels)}")
+
     except Exception:
         logger.exception(f"Failed to fetch M3U {source['id']}")
         return 0
-
-    new_channels = parse_m3u(text, source["id"])
-
-    logger.info(f"PARSED CHANNELS = {len(new_channels)}")
 
     # Keep admin edits across re-syncs. Match by original_name (M3U parsed name).
     existing = await db.channels.find({"source_id": source["id"]}, {"_id": 0}).to_list(50000)
