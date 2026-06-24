@@ -322,7 +322,7 @@ async def sync_source(source: dict) -> int:
     except Exception:
         return 0
 
-    try:
+        try:
         async with httpx.AsyncClient(
             timeout=60.0,
             follow_redirects=True,
@@ -341,8 +341,8 @@ async def sync_source(source: dict) -> int:
             r.raise_for_status()
             text = r.text
 
-    except Exception as e:
-        logger.error(f"Failed to fetch M3U {source['id']}: {e}")
+    except Exception:
+        logger.exception(f"Failed to fetch M3U {source['id']}")
         return 0
 
     new_channels = parse_m3u(text, source["id"])
