@@ -315,14 +315,13 @@ def parse_m3u(text: str, source_id: str) -> List[dict]:
             i += 1
     return channels
 
-
 async def sync_source(source: dict) -> int:
     try:
         url = fernet.decrypt(source["url_enc"].encode()).decode()
     except Exception:
         return 0
 
-        try:
+    try:
         async with httpx.AsyncClient(
             timeout=60.0,
             follow_redirects=True,
