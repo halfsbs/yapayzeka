@@ -323,10 +323,11 @@ async def sync_source(source: dict) -> int:
 
     try:
         async with httpx.AsyncClient(
-            timeout=60.0,
+            timeout=300.0,
             follow_redirects=True,
             headers={
-                "User-Agent": "VLC/3.0.20 LibVLC/3.0.20"
+                "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
+                "Accept-Encoding": "identity"
             }
         ) as ac:
             r = await ac.get(url)
