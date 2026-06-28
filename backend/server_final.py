@@ -24,6 +24,7 @@ import httpx
 from cryptography.fernet import Fernet
 import hashlib
 import base64
+import urllib.parse
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -199,6 +200,10 @@ class AdCreate(BaseModel):
     type: Literal["banner", "interstitial"] = "banner"
     active: bool = True
     weight: int = 1
+
+
+class FavBody(BaseModel):
+    channel_id: str
 
 
 # ---------- Helpers ----------
@@ -445,7 +450,7 @@ def detect_categories(group_title: str, name: str) -> List[str]:
 
 
 # ---------- M3U Parser ----------
-M3U_INFO = re.compile(r'#EXTINF:-?\d+(Twos+([^,]*))?,(.*)', re.IGNORECASE)
+M3U_INFO = re.compile(r'#EXTINF:-?\d+(?:\s+([^,]*))?,(.*)', re.IGNORECASE)
 ATTR_RE = re.compile(r'([a-zA-Z0-9_-]+)="([^"]*)"')
 
 
@@ -970,6 +975,95 @@ async def list_favs(user: dict = Depends(get_current_user)):
         seen[key] = True
         out.append(Channel(**{k: v for k, v in d.items() if k in Channel.model_fields}))
     return out
+
+# ============================================================
+# STREAM PROXY - M3U8 REWRITE + SEGMENT TUNNELING
+# ============================================================
+
+@api_router.get("/channels/{channel_id}/proxy")
+async def proxy_stream(channel_id: str, request: Request, segment: Optional[str] = None, user: dict = Depends(get_current_user)):
+    ch = await db.channels.find_one({"id": channel_id}, {"_id": 0})
+    if not ch or ch.get("hidden"):
+        raise HTTPException(404, "Kanal bulunamadi")
+    if ch.get("vip") and not is_vip_active(user):
+        raise HTTPException(403, "Bu kanal sadece VIP uyelere aciktir")
+    if ch.get("adult") and not user.get("adult_allowed"):
+        raise HTTPException(403, "Bu kanali izleme yetkiniz yok (+18)")
+
+    try:
+        primary_url = fernet.decrypt(ch["stream_url_enc"].encode()).decode()
+    except Exception:
+        raise HTTPException(500, "Yayin sifrlesi cozulemedi")
+
+    headers = {
+        "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
+        "Accept": "*/*",
+        "Connection": "keep-alive"
+    }
+
+    # SEGMENT TUNNELING
+    if segment:
+        decoded_segment = urllib.parse.unquote(segment)
+        logger.info(f"[PROXY SEGMENT] {decoded_segment[:120]}...")
+        async def segment_generator():
+            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+                async with client.stream("GET", decoded_segment, headers=headers) as r:
+                    if r.status_code != 200:
+                        logger.warning(f"[PROXY SEGMENT ERROR] {r.status_code} for {decoded_segment[:120]}")
+                    async for chunk in r.aiter_bytes(chunk_size=32768):
+                        yield chunk
+        return StreamingResponse(segment_generator(), media_type="video/mp2t")
+
+    # M3U8 REWRITE
+    async with httpx.AsyncClient(follow_redirects=True, timeout=20.0) as client:
+        res = await client.get(primary_url, headers=headers)
+        if res.status_code != 200:
+            raise HTTPException(502, f"IPTV Kaynagindan hata dondu: {res.status_code}")
+
+        m3u8_content = res.text
+
+        # 302 sonrası gerçek URL
+        actual_url = str(res.url)
+        base_stream_dir = actual_url.rsplit('/', 1)[0] + '/'
+
+        # Proxy base URL (segmentler buraya yönlendirilecek)
+        base_proxy_url = str(request.url).split("?")[0]
+
+        logger.info(f"[PROXY M3U8] actual_url={actual_url[:80]}... base_dir={base_stream_dir[:80]}...")
+
+        rewritten_lines = []
+        for line in m3u8_content.splitlines():
+            line_strip = line.strip()
+            if line_strip and not line_strip.startswith("#"):
+                # Relative path'i absolute yap
+                if line_strip.startswith("http"):
+                    absolute_ts_url = line_strip
+                elif line_strip.startswith("/"):
+                    # Root-relative path
+                    parsed = urllib.parse.urlparse(actual_url)
+                    absolute_ts_url = f"{parsed.scheme}://{parsed.netloc}{line_strip}"
+                else:
+                    # Path-relative
+                    absolute_ts_url = base_stream_dir + line_strip
+
+                # URL-encode et ki query string karakterleri bozulmasın
+                encoded_segment = urllib.parse.quote(absolute_ts_url, safe='')
+                new_line = f"{base_proxy_url}?segment={encoded_segment}"
+                rewritten_lines.append(new_line)
+            else:
+                rewritten_lines.append(line)
+
+        final_m3u8 = "\n".join(rewritten_lines)
+        logger.info(f"[PROXY M3U8] Rewritten {len(rewritten_lines)} lines")
+        return Response(
+            content=final_m3u8,
+            media_type="application/vnd.apple.mpegurl",
+            headers={
+                "Cache-Control": "no-cache",
+                "Access-Control-Allow-Origin": "*",
+            }
+        )
+
 
 
 # ---------- Admin: Sources ----------
