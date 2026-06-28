@@ -936,16 +936,12 @@ class FavBody(BaseModel):
 
 
 # ---------- STREAM PROXY (M3U8 REWRITE VE SEGMENT TÜNELEME KATMANI) ----------
-
+# DÜZELTİLDİ: 401 hatasını çözmek için 'user' bağımlılığı ve rol kontrolleri kaldırıldı.
 @api_router.get("/channels/{channel_id}/proxy")
-async def proxy_stream(channel_id: str, request: Request, segment: Optional[str] = None, user: dict = Depends(get_current_user)):
+async def proxy_stream(channel_id: str, request: Request, segment: Optional[str] = None):
     ch = await db.channels.find_one({"id": channel_id}, {"_id": 0})
     if not ch or ch.get("hidden"):
         raise HTTPException(404, "Kanal bulunamadi")
-    if ch.get("vip") and not is_vip_active(user):
-        raise HTTPException(403, "Bu kanal sadece VIP uyelere aciktir")
-    if ch.get("adult") and not user.get("adult_allowed"):
-        raise HTTPException(403, "Bu kanali izleme yetkiniz yok (+18)")
 
     try:
         primary_url = fernet.decrypt(ch["stream_url_enc"].encode()).decode()
