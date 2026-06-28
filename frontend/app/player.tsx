@@ -16,7 +16,7 @@ import { api } from "@/src/api";
 // true  = expo-video (modern, PIP destekli, QR kodda çalışır)
 // false = expo-av    (klasik, Expo Go'da garanti çalışır)
 // ============================================================
-const USE_EXPO_VIDEO = true;
+const USE_EXPO_VIDEO = false;
 
 let expoVideoPkg: any = null;
 try {
