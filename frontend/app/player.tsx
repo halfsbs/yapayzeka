@@ -46,6 +46,9 @@ export default function Player() {
 
         const streamRes = await api.stream(id);
         const allUrls = [streamRes.stream_url, ...(streamRes.stream_urls || [])].filter(Boolean);
+        if (allUrls.length === 0) {
+          throw new Error("Yayın URL'si bulunamadı");
+        }
         setUrls(allUrls);
         setActiveIdx(0);
         setError(null);
