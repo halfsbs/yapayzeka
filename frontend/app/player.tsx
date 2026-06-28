@@ -149,15 +149,13 @@ function PlayerInner({
   onFailed: () => void;
   onError: (msg: string) => void;
 }) {
+  // DÜZELTİLDİ: Hata veren expoPkg ifadesi tamamen temizlendi
   if (USE_EXPO_VIDEO && expoVideoPkg) {
     return <ExpoVideoPlayer url={url} onFailed={onFailed} onError={onError} />;
   }
   return <ExpoAvPlayer url={url} onFailed={onFailed} onError={onError} />;
 }
 
-// ============================================================
-// DÜZELTİLDİ: useEvent tamamen kaldırıldı, event listener eklendi.
-// ============================================================
 function ExpoVideoPlayer({
   url,
   onFailed,
@@ -185,7 +183,6 @@ function ExpoVideoPlayer({
     setHasError(false);
     isFailedTriggered.current = false;
 
-    // Sürüm uyuşmazlığı yaşamamak için durum değişikliklerini yerel dinleyiciyle yakalıyoruz
     const subscription = player.addListener("statusChange", (event: any) => {
       const currentStatus = event?.status || player.status;
       const currentError = event?.error || player.error;
