@@ -1011,35 +1011,76 @@ async def proxy_stream(channel_id: str, request: Request, segment: Optional[str]
         decoded_segment = urllib.parse.unquote(segment)
         logger.info(f"[PROXY SEGMENT] {decoded_segment[:120]}...")
         async def segment_generator():
-            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(60.0, connect=15.0)) as client:
                 async with client.stream("GET", decoded_segment, headers=headers) as r:
                     if r.status_code != 200:
                         logger.warning(f"[PROXY SEGMENT ERROR] {r.status_code} for {decoded_segment[:120]}")
                     async for chunk in r.aiter_bytes(chunk_size=32768):
                         yield chunk
-        return StreamingResponse(segment_generator(), media_type="video/mp2t")
+        # Media type'ı URL'den tahmin et
+        seg_lower = decoded_segment.lower()
+        if seg_lower.endswith('.m3u8') or seg_lower.endswith('.m3u'):
+            media_type = "application/vnd.apple.mpegurl"
+        elif seg_lower.endswith('.mp4') or seg_lower.endswith('.m4v'):
+            media_type = "video/mp4"
+        elif seg_lower.endswith('.ts'):
+            media_type = "video/mp2t"
+        else:
+            media_type = "video/mp2t"
+        return StreamingResponse(segment_generator(), media_type=media_type)
 
     # M3U8 REWRITE
-    async with httpx.AsyncClient(follow_redirects=True, timeout=20.0) as client:
+    async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(60.0, connect=15.0)) as client:
         res = await client.get(primary_url, headers=headers)
         if res.status_code != 200:
             raise HTTPException(502, f"IPTV Kaynagindan hata dondu: {res.status_code}")
 
+        # YANIT KONTROLÜ: M3U8 mi yoksa hata/HTML mi?
+        content_type = res.headers.get('content-type', '').lower()
         m3u8_content = res.text
+
+        # Eğer HTML dönerse veya M3U8 değilse hata ver
+        if '<html' in m3u8_content.lower()[:500] or '<!doctype' in m3u8_content.lower()[:500]:
+            logger.error(f"[PROXY M3U8] IPTV kaynagi HTML dondurdu, M3U8 bekleniyor. URL={mask_url(primary_url)}")
+            raise HTTPException(502, "IPTV kaynagi M3U8 yerine HTML dondurdu. Kaynak gecersiz olabilir.")
+
+        if not m3u8_content.strip().startswith('#EXTM3U'):
+            logger.error(f"[PROXY M3U8] Gecersiz M3U8 yaniti. İlk 200 karakter: {m3u8_content[:200]}")
+            raise HTTPException(502, "IPTV kaynagindan gecersiz M3U8 yaniti alindi")
 
         # 302 sonrası gerçek URL
         actual_url = str(res.url)
-        base_stream_dir = actual_url.rsplit('/', 1)[0] + '/'
+        # Query string'i temizle (base dizin hesaplama için)
+        url_no_query = actual_url.split('?')[0]
+        base_stream_dir = url_no_query.rsplit('/', 1)[0] + '/'
 
         # Proxy base URL (segmentler buraya yönlendirilecek)
         base_proxy_url = str(request.url).split("?")[0]
 
-        logger.info(f"[PROXY M3U8] actual_url={actual_url[:80]}... base_dir={base_stream_dir[:80]}...")
+        line_count = len(m3u8_content.splitlines())
+        logger.info(f"[PROXY M3U8] actual_url={actual_url[:80]}... base_dir={base_stream_dir[:80]}... lines={line_count}")
 
         rewritten_lines = []
         for line in m3u8_content.splitlines():
             line_strip = line.strip()
-            if line_strip and not line_strip.startswith("#"):
+
+            # URI="..." içeren satırları da rewrite et (encryption key'ler vb.)
+            if line_strip.startswith("#EXT-X-KEY") or line_strip.startswith("#EXT-X-MAP"):
+                import re as re_local
+                uri_match = re_local.search(r'URI="([^"]+)"', line_strip)
+                if uri_match:
+                    uri = uri_match.group(1)
+                    if uri.startswith("http"):
+                        abs_uri = uri
+                    elif uri.startswith("/"):
+                        parsed = urllib.parse.urlparse(actual_url)
+                        abs_uri = f"{parsed.scheme}://{parsed.netloc}{uri}"
+                    else:
+                        abs_uri = base_stream_dir + uri
+                    encoded_uri = urllib.parse.quote(abs_uri, safe='')
+                    line = line.replace(f'URI="{uri}"', f'URI="{base_proxy_url}?segment={encoded_uri}"')
+                rewritten_lines.append(line)
+            elif line_strip and not line_strip.startswith("#"):
                 # Relative path'i absolute yap
                 if line_strip.startswith("http"):
                     absolute_ts_url = line_strip
