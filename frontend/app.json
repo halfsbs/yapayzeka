@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Yapay Zeka İptv",
+    "name": "Yapay Zeka IPTV",
     "slug": "yapay-zeka-iptv",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -14,11 +14,41 @@
     },
     "android": {
       "package": "com.yapayzeka.iptv",
+      "usesCleartextTraffic": true,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#000"
+        "backgroundColor": "#000000"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "data": [
+            {
+              "scheme": "vlc"
+            },
+            {
+              "scheme": "mxplayer"
+            },
+            {
+              "scheme": "bsplayer"
+            },
+            {
+              "scheme": "kodi"
+            },
+            {
+              "scheme": "http"
+            },
+            {
+              "scheme": "https"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -30,17 +60,24 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
+          "image": "./assets/images/splash-image.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#000"
+          "backgroundColor": "#000000"
         }
       ],
+      "expo-secure-store",
       "expo-video",
-      "expo-secure-store"
+      "./plugins/withVlcPlayer.js"
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "63b6b447-8a79-42a6-9ebc-978a7daead77"
+      }
     }
   }
 }
