@@ -19,7 +19,6 @@ const COLORS = [
 
 const ICONS: Record<string, any> = {
   Spor: "football",
-  "Spor": "football",
   Filmler: "film",
   Sinema: "film",
   Haberler: "newspaper",
