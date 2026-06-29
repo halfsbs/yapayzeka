@@ -38,13 +38,13 @@ if not JWT_SECRET:
 JWT_ALG = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.environ.get("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
-_fkey = base64.urlsafe_b64encode(hashlib.sha256(JWT_SECRET.encode()).digest())
+_fkey = base64.urlencode(hashlib.sha256(JWT_SECRET.encode()).digest()) if hasattr(base64, 'urlencode') else base64.urlsafe_b64encode(hashlib.sha256(JWT_SECRET.encode()).digest())
 fernet = Fernet(_fkey)
 
 app = FastAPI()
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_handler = _rate_limit_exceeded_handler # Safe keeper
 api_router = APIRouter(prefix="/api")
 bearer = HTTPBearer(auto_error=False)
 
@@ -350,13 +350,10 @@ COUNTRY_MAP = {
     "BR": "Brezilya", "BRAZIL": "Brezilya", "BRASIL": "Brezilya",
     "MX": "Meksika", "MEXICO": "Meksika",
     "CA": "Kanada", "CANADA": "Kanada",
-    "AU": "Avustralya", "AUSTRALIA": "Avustralya",
-    "EG": "Misir", "EGYPT": "Misir",
-    "SA": "Suudi Arabistan", "SAUDI ARABIA": "Suudi Arabistan",
-    "AE": "Birlesik Arap Emirlikleri", "UAE": "Birlesik Arap Emirlikleri",
-    "IE": "Irlanda", "IRELAND": "Irlanda",
-    "AL": "Arnavutluk", "ALBANIA": "Arnavutluk",
-    "XK": "Kosova", "KOSOVO": "Kosova", "KOSOVA": "Kosova",
+    "AU": "Avustralya", "AUTO": "Otomobil", "AUTOMOTIVE": "Otomobil", "OTOMOBIL": "Otomobil",
+    "EG": "Misir", "EGYPT": "Misir", "SA": "Suudi Arabistan", "SAUDI ARABIA": "Suudi Arabistan",
+    "AE": "Birlesik Arap Emirlikleri", "UAE": "Birlesik Arap Emirlikleri", "IE": "Irlanda", "IRELAND": "Irlanda",
+    "AL": "Arnavutluk", "ALBANIA": "Arnavutluk", "XK": "Kosova", "KOSOVO": "Kosova", "KOSOVA": "Kosova",
 }
 
 TYPE_KEYWORDS = {
@@ -390,7 +387,6 @@ ADULT_KW = ["+18", "adult", "xxx", "porn", "brazzers", "playboy", "hustler", "vi
 
 
 def _is_vod_url(url: str) -> bool:
-    """Detect VOD/movie/series links, including ones with query strings."""
     u = url.lower()
     path = u.split("?", 1)[0].split("#", 1)[0]
     if any(m in u for m in VOD_PATH_MARKERS):
@@ -401,16 +397,12 @@ def _is_vod_url(url: str) -> bool:
 
 
 def detect_categories(group_title: str, name: str) -> List[str]:
-    """Return all matching categories: detected country + detected type + original m3u group."""
     cats: List[str] = []
-
     def _add(c: str):
         c = (c or "").strip()
         if c and c not in cats:
             cats.append(c)
-
     raw_group = (group_title or "").strip()
-
     if raw_group:
         parts = re.split(r"[\|\:\-\u2022/]", raw_group)
         for part in parts:
@@ -424,7 +416,6 @@ def detect_categories(group_title: str, name: str) -> List[str]:
             _add(COUNTRY_MAP[gu])
         if gu in TYPE_KEYWORDS:
             _add(TYPE_KEYWORDS[gu])
-
     upper_name = (name or "").upper()
     prefix_match = re.match(r"^\s*([A-Z]{2,})\s*[\u2022\|\:\-\.]\s*", name or "", re.IGNORECASE)
     if prefix_match:
@@ -439,10 +430,8 @@ def detect_categories(group_title: str, name: str) -> List[str]:
     for key, val in TYPE_KEYWORDS.items():
         if len(key) > 3 and key in upper_name:
             _add(val)
-
     if raw_group:
         _add(raw_group)
-
     if not cats:
         _add("Genel")
     return cats
@@ -454,11 +443,9 @@ ATTR_RE = re.compile(r'([a-zA-Z0-9_-]+)="([^"]*)"')
 
 
 def parse_m3u(text: str, source_id: str) -> List[dict]:
-    """Parse M3U text into channel dicts. Memory-efficient for large files."""
     channels = []
     lines = text.splitlines()
     total = len(lines)
-
     i = 0
     count = 0
     last_log = 0
@@ -488,29 +475,22 @@ def parse_m3u(text: str, source_id: str) -> List[dict]:
                 if _is_vod_url(url):
                     i = j + 1
                     continue
-
                 group_title = (attrs.get("group-title") or "")
                 gl = group_title.lower()
                 name_lower = name.lower()
-
                 if any(x in gl for x in SKIP_WORDS) or any(x in name_lower for x in SKIP_WORDS):
                     i = j + 1
                     continue
-
                 vip = "vip" in name_lower or "vip" in gl
                 clean_name = re.sub(r'\[?vip\]?', '', name, flags=re.IGNORECASE).strip(" -|")
-
                 cats = detect_categories(group_title, name)
-
                 is_adult = False
                 check_text = (clean_name or name).lower() + " " + gl
                 if any(k in check_text for k in ADULT_KW):
                     is_adult = True
                     if "+18" not in cats:
                         cats.append("+18")
-
                 primary_cat = cats[0] if cats else "Genel"
-
                 channels.append({
                     "id": str(uuid.uuid4()),
                     "name": clean_name or name,
@@ -530,13 +510,11 @@ def parse_m3u(text: str, source_id: str) -> List[dict]:
             i = j + 1
         else:
             i += 1
-
     logger.info(f"parse_m3u done: {len(channels)} channels from {total} lines")
     return channels
 
 
 async def _download_m3u(url: str, max_retries: int = 3) -> str:
-    """Download M3U with streaming + safe range resume + temp file for large files."""
     import tempfile
     headers = {
         "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
@@ -546,7 +524,6 @@ async def _download_m3u(url: str, max_retries: int = 3) -> str:
     }
     total_received = 0
     temp_path = None
-
     for attempt in range(max_retries):
         try:
             logger.info(f"M3U DOWNLOAD attempt {attempt + 1}/{max_retries} - received so far: {total_received} bytes")
@@ -554,7 +531,6 @@ async def _download_m3u(url: str, max_retries: int = 3) -> str:
             if total_received > 0:
                 req_headers["Range"] = f"bytes={total_received}-"
                 logger.info(f"Resuming from byte {total_received}")
-
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(300.0, connect=60.0),
                 follow_redirects=True,
@@ -562,16 +538,13 @@ async def _download_m3u(url: str, max_retries: int = 3) -> str:
                 async with ac.stream("GET", url, headers=req_headers) as response:
                     if response.status_code not in (200, 206):
                         response.raise_for_status()
-
                     logger.info(f"M3U RESPONSE STATUS = {response.status_code}")
-
                     if total_received > 0 and response.status_code == 200:
                         logger.warning("Server ignored Range; restarting download from scratch.")
                         total_received = 0
                         if temp_path and os.path.exists(temp_path):
                             os.remove(temp_path)
                         temp_path = None
-
                     if temp_path is None:
                         fd, temp_path = tempfile.mkstemp(suffix=".m3u")
                         os.close(fd)
@@ -581,10 +554,8 @@ async def _download_m3u(url: str, max_retries: int = 3) -> str:
                             total_received += len(chunk)
                             if total_received % 50000000 < 100000:
                                 logger.info(f"M3U DOWNLOADED so far: {total_received} bytes")
-
             logger.info(f"M3U DOWNLOAD COMPLETE: {total_received} bytes")
             break
-
         except Exception as e:
             logger.warning(f"M3U download attempt {attempt + 1} failed: {type(e).__name__}: {e}")
             if attempt == max_retries - 1:
@@ -596,7 +567,6 @@ async def _download_m3u(url: str, max_retries: int = 3) -> str:
                 logger.warning(f"Using partial download: {total_received} bytes")
                 break
             await asyncio.sleep(2 ** attempt)
-
     if temp_path and os.path.exists(temp_path):
         with open(temp_path, "r", encoding="utf-8", errors="ignore") as f:
             text = f.read()
@@ -610,16 +580,12 @@ async def sync_source(source: dict) -> int:
         url = fernet.decrypt(source["url_enc"].encode()).decode()
     except Exception:
         return 0
-
     logger.info(f"SYNC START for source={source['id']} url={mask_url(url)}")
-
     text = await _download_m3u(url)
     if not text:
         logger.error(f"M3U download empty/failed for {source['id']}")
         return 0
-
     logger.info(f"M3U TEXT SIZE = {len(text)}")
-
     logger.info("STARTING PARSE")
     try:
         new_channels = await asyncio.to_thread(parse_m3u, text, source["id"])
@@ -627,17 +593,14 @@ async def sync_source(source: dict) -> int:
         logger.exception(f"Parse failed for M3U {source['id']}")
         return 0
     logger.info(f"PARSED CHANNELS = {len(new_channels)}")
-
     try:
         existing = await db.channels.find({"source_id": source["id"]}, {"_id": 0}).to_list(None)
         overrides: dict = {}
-
         def _has_override(d: dict) -> bool:
             return bool(
                 d.get("name_overridden") or d.get("category_overridden")
                 or d.get("vip_overridden") or d.get("hidden") or d.get("adult_overridden")
             )
-
         for c in existing:
             key = c.get("original_name") or c.get("name")
             if not key:
@@ -645,7 +608,6 @@ async def sync_source(source: dict) -> int:
             prev = overrides.get(key)
             if prev is None or (_has_override(c) and not _has_override(prev)):
                 overrides[key] = c
-
         used: set = set()
         for c in new_channels:
             ov = overrides.get(c["original_name"])
@@ -667,14 +629,11 @@ async def sync_source(source: dict) -> int:
                 if ov.get("adult_overridden"):
                     c["adult"] = ov.get("adult", c.get("adult", False))
                     c["adult_overridden"] = True
-
         await db.channels.delete_many({"source_id": source["id"]})
-
         if new_channels:
             chunk_size = 5000
             for i in range(0, len(new_channels), chunk_size):
                 await db.channels.insert_many(new_channels[i:i + chunk_size])
-
         await db.m3u_sources.update_one(
             {"id": source["id"]},
             {"$set": {"last_synced": datetime.now(timezone.utc), "channel_count": len(new_channels)}},
@@ -825,7 +784,6 @@ async def categories(user: dict = Depends(get_current_user)):
     match: dict = {"hidden": {"$ne": True}}
     if not user.get("adult_allowed"):
         match["adult"] = {"$ne": True}
-
     pipeline = [
         {"$match": match},
         {"$project": {"cats": {"$cond": [
@@ -886,7 +844,10 @@ async def list_channels(
 
 @api_router.get("/channels/{channel_id}/stream", response_model=StreamRes)
 async def get_stream(channel_id: str):
-    """Auth'siz: Player'lar native katta çalışır, JWT token taşıyamazlar."""
+    """
+    DÜZELTİLDİ: Oynatıcının (expo-video) m3u8 playlist dosyasını hafızaya alıp 
+    30 saniyede bir dondurmasını engellemek için HTTP yanıt başlıklarında önbelleği (cache) tamamen yasaklıyoruz.
+    """
     ch = await db.channels.find_one({"id": channel_id}, {"_id": 0})
     if not ch or ch.get("hidden"):
         raise HTTPException(404, "Kanal bulunamadi")
@@ -926,7 +887,19 @@ async def get_stream(channel_id: str):
     if not primary_url and not fallback_urls:
         raise HTTPException(500, "Yayin okunamadi")
     all_urls = ([primary_url] if primary_url else []) + fallback_urls
-    return StreamRes(stream_url=all_urls[0], stream_urls=all_urls)
+    
+    response_data = StreamRes(stream_url=all_urls[0], stream_urls=all_urls)
+    
+    return Response(
+        content=response_data.model_dump_json(),
+        media_type="application/json",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "Access-Control-Allow-Origin": "*",
+        }
+    )
 
 
 @api_router.post("/favorites")
@@ -951,7 +924,6 @@ async def list_favs(user: dict = Depends(get_current_user)):
     fav_ids = (fresh or {}).get("favorites", [])
     if not fav_ids:
         return []
-
     query = {"$or": [{"id": {"$in": fav_ids}}, {"norm_name": {"$in": fav_ids}}], "hidden": {"$ne": True}}
     if not user.get("adult_allowed"):
         query["adult"] = {"$ne": True}
@@ -1320,7 +1292,7 @@ async def health():
     return {"ok": True}
 
 
-app.include_router(api_router)
+app. include_router(api_router)
 
 _cors_origins = os.environ.get("CORS_ORIGINS", "*").split(",")
 if "*" in _cors_origins:
