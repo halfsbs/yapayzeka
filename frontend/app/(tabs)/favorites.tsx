@@ -59,9 +59,24 @@ export default function Favorites() {
                 ) : (
                   <Ionicons name="tv-outline" size={26} color={theme.textDim} />
                 )}
+                {item.adult && (
+                  <View style={[styles.badge, { backgroundColor: theme.accent, top: 4, left: 4 }]}>
+                    <Text style={styles.badgeText}>🔞</Text>
+                  </View>
+                )}
+                {item.sport && (
+                  <View style={[styles.badge, { backgroundColor: theme.success, top: item.adult ? 22 : 4, left: 4 }]}>
+                    <Text style={styles.badgeText}>⚽</Text>
+                  </View>
+                )}
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.name} numberOfLines={1}>{item.name}</Text>
+                <Text style={styles.name} numberOfLines={1}>
+                  {item.name}
+                  {item.vip ? " ⭐" : ""}
+                  {item.adult ? " 🔞" : ""}
+                  {item.sport ? " ⚽" : ""}
+                </Text>
                 <Text style={styles.cat}>{item.category}{item.vip ? " · VIP" : ""}</Text>
               </View>
               <Pressable
@@ -92,9 +107,11 @@ const styles = StyleSheet.create({
   },
   logoBox: {
     width: 56, height: 56, borderRadius: 10, backgroundColor: theme.bg2,
-    alignItems: "center", justifyContent: "center",
+    alignItems: "center", justifyContent: "center", position: "relative",
   },
   logo: { width: "85%", height: "85%" },
+  badge: { position: "absolute", paddingHorizontal: 4, paddingVertical: 1, borderRadius: 5 },
+  badgeText: { fontSize: 8, fontWeight: "800" },
   name: { color: theme.text, fontSize: 15, fontWeight: "700" },
   cat: { color: theme.textDim, fontSize: 12, marginTop: 2 },
   heartBtn: { padding: 6 },

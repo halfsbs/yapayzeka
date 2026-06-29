@@ -7,11 +7,11 @@ import { Image } from "expo-image";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { api, theme, Channel, PublicSettings } from "@/src/api";
+import { api, theme, Channel, PublicSettings, CategoryInfo } from "@/src/api";
 
 export default function Home() {
   const router = useRouter();
-  const [cats, setCats] = useState<{ name: string; count: number }[]>([]);
+  const [cats, setCats] = useState<CategoryInfo[]>([]);
   const [activeCat, setActiveCat] = useState<string>("Tümü");
   const [channels, setChannels] = useState<Channel[]>([]);
   const [search, setSearch] = useState("");
@@ -47,6 +47,9 @@ export default function Home() {
 
   const banner = settings?.ads?.find(a => a.type === "banner" && a.active);
 
+  // Kategori adı -> display_name mapping (kanal altındaki kategori metni için)
+  const catDisplayMap = Object.fromEntries(cats.map(c => [c.name, c.display_name || c.name]));
+
   const renderItem = ({ item }: { item: Channel }) => (
     <Pressable
       testID={`channel-card-${item.id}`}
@@ -65,13 +68,22 @@ export default function Home() {
             <Text style={styles.vipText}>VIP</Text>
           </View>
         )}
+        {item.adult && (
+          <View style={[styles.badge, { backgroundColor: theme.accent, top: 6, left: 6 }]}>
+            <Text style={styles.badgeText}>🔞</Text>
+          </View>
+        )}
+        {item.sport && (
+          <View style={[styles.badge, { backgroundColor: theme.success, top: item.adult ? 28 : 6, left: 6 }]}>
+            <Text style={styles.badgeText}>⚽</Text>
+          </View>
+        )}
       </View>
       <Text numberOfLines={2} style={styles.cardName}>{item.name}</Text>
-      <Text numberOfLines={1} style={styles.cardCat}>{item.category}</Text>
+      <Text numberOfLines={1} style={styles.cardCat}>{catDisplayMap[item.category] || item.category}</Text>
     </Pressable>
   );
 
-  const headerCats = ["Tümü", ...cats.map(c => c.name)];
   const appName = settings?.settings?.app_name || "Yapay Zeka İptv";
   const accent = settings?.settings?.primary_color || theme.accent;
 
@@ -126,14 +138,19 @@ export default function Home() {
         ) : null}
       </View>
 
+      {/* Kategori Çipleri - Tümü ayrı + cats.map ayrı (diğer AI'nin temiz yapısı) */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.chipRow} style={styles.chipScroll}>
-        {headerCats.map(cat => {
-          const active = activeCat === cat;
+        <Pressable testID="chip-Tümü" onPress={() => setActiveCat("Tümü")}
+          style={[styles.chip, activeCat === "Tümü" && { backgroundColor: accent + "33", borderColor: accent }]}>
+          <Text style={[styles.chipText, activeCat === "Tümü" && { color: "#fff" }]}>Tümü</Text>
+        </Pressable>
+        {cats.map(cat => {
+          const active = activeCat === cat.name;
           return (
-            <Pressable key={cat} testID={`chip-${cat}`} onPress={() => setActiveCat(cat)}
+            <Pressable key={cat.name} testID={`chip-${cat.name}`} onPress={() => setActiveCat(cat.name)}
               style={[styles.chip, active && { backgroundColor: accent + "33", borderColor: accent }]}>
-              <Text style={[styles.chipText, active && { color: "#fff" }]}>{cat}</Text>
+              <Text style={[styles.chipText, active && { color: "#fff" }]}>{cat.display_name || cat.name}</Text>
             </Pressable>
           );
         })}
@@ -185,6 +202,8 @@ const styles = StyleSheet.create({
   logo: { width: "85%", height: "85%" },
   vipBadge: { position: "absolute", top: 6, right: 6, flexDirection: "row", alignItems: "center", gap: 2, backgroundColor: theme.gold, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 8 },
   vipText: { fontSize: 9, fontWeight: "800", color: "#000" },
+  badge: { position: "absolute", paddingHorizontal: 5, paddingVertical: 2, borderRadius: 6 },
+  badgeText: { fontSize: 9, fontWeight: "800" },
   cardName: { color: theme.text, fontSize: 14, fontWeight: "700" },
   cardCat: { color: theme.textDim, fontSize: 11 },
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 12 },

@@ -4,7 +4,7 @@ import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
-import { api, setToken, theme, User } from "@/src/api";
+import { api, clearTokens, theme, User } from "@/src/api";
 
 export default function Profile() {
   const router = useRouter();
@@ -19,7 +19,7 @@ export default function Profile() {
   }, []));
 
   const logout = async () => {
-    await setToken(null);
+    await clearTokens();
     router.replace("/login");
   };
 
@@ -33,6 +33,11 @@ export default function Profile() {
 
   const roleLabel = user?.role === "admin" ? "Yönetici" : user?.role === "vip" ? "VIP Üye" : "Standart Üye";
   const roleColor = user?.role === "admin" ? theme.accent : user?.role === "vip" ? theme.gold : theme.textDim;
+
+  // VIP süresi hesaplama
+  const vipText = user?.vip_until
+    ? new Date(user.vip_until).toLocaleDateString("tr-TR", { day: "2-digit", month: "long", year: "numeric" })
+    : null;
 
   return (
     <SafeAreaView style={styles.root} edges={["top"]} testID="profile-screen">
@@ -58,6 +63,35 @@ export default function Profile() {
               color={roleColor}
             />
             <Text style={[styles.roleText, { color: roleColor }]}>{roleLabel}</Text>
+          </View>
+
+          {/* VIP Süresi */}
+          {vipText && (
+            <View style={[styles.infoBadge, { borderColor: theme.gold, marginTop: 6 }]}>
+              <Ionicons name="calendar" size={11} color={theme.gold} />
+              <Text style={{ color: theme.gold, fontSize: 11, fontWeight: "700" }}>
+                VIP bitiş: {vipText}
+              </Text>
+            </View>
+          )}
+
+          {/* Yetki Rozetleri */}
+          <View style={{ flexDirection: "row", gap: 6, marginTop: 8 }}>
+            {user?.adult_allowed && (
+              <View style={[styles.permBadge, { backgroundColor: theme.accent + "33", borderColor: theme.accent }]}>
+                <Text style={{ color: theme.accent, fontSize: 10, fontWeight: "700" }}>🔞 +18</Text>
+              </View>
+            )}
+            {user?.sports_allowed && (
+              <View style={[styles.permBadge, { backgroundColor: theme.success + "33", borderColor: theme.success }]}>
+                <Text style={{ color: theme.success, fontSize: 10, fontWeight: "700" }}>⚽ Spor</Text>
+              </View>
+            )}
+            {user?.blocked && (
+              <View style={[styles.permBadge, { backgroundColor: theme.danger + "33", borderColor: theme.danger }]}>
+                <Text style={{ color: theme.danger, fontSize: 10, fontWeight: "700" }}>🚫 Engelli</Text>
+              </View>
+            )}
           </View>
         </LinearGradient>
       </View>
@@ -143,6 +177,15 @@ const styles = StyleSheet.create({
     borderWidth: 1, marginTop: 4,
   },
   roleText: { fontSize: 12, fontWeight: "700" },
+  infoBadge: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8,
+    borderWidth: 1,
+  },
+  permBadge: {
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8,
+    borderWidth: 1,
+  },
   menu: { paddingHorizontal: 16, gap: 10 },
   menuItem: {
     flexDirection: "row", alignItems: "center", gap: 14,

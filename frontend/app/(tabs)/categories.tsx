@@ -6,7 +6,7 @@ import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
-import { api, theme } from "@/src/api";
+import { api, theme, CategoryInfo } from "@/src/api";
 
 const COLORS = [
   ["#7A0A1F", "#C8102E"],
@@ -19,10 +19,15 @@ const COLORS = [
 
 const ICONS: Record<string, any> = {
   Spor: "football",
+  "Spor": "football",
   Filmler: "film",
+  Sinema: "film",
   Haberler: "newspaper",
+  Haber: "newspaper",
   Çocuk: "happy",
+  Cocuk: "happy",
   Müzik: "musical-notes",
+  Muzik: "musical-notes",
   Belgesel: "earth",
   Dizi: "videocam",
   Genel: "tv",
@@ -30,12 +35,16 @@ const ICONS: Record<string, any> = {
 
 export default function Categories() {
   const router = useRouter();
-  const [cats, setCats] = useState<{ name: string; count: number }[]>([]);
+  const [cats, setCats] = useState<CategoryInfo[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     api.categories()
-      .then(setCats)
+      .then((data) => {
+        // Backend sıralı gönderiyor ama garanti olması için tekrar sırala
+        const sorted = [...data].sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
+        setCats(sorted);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
@@ -59,23 +68,27 @@ export default function Categories() {
           contentContainerStyle={{ gap: 12, paddingBottom: 24 }}
           renderItem={({ item, index }) => {
             const c = COLORS[index % COLORS.length];
-            const ic = ICONS[item.name] || "albums";
+            const ic = ICONS[item.name] || ICONS[item.display_name] || "albums";
+            const isSuper = item.is_superfav;
             return (
               <Pressable
                 testID={`cat-${item.name}`}
                 onPress={() =>
                   router.push(`/category-detail?name=${encodeURIComponent(item.name)}`)
                 }
-                style={({ pressed }) => [styles.card, pressed && { opacity: 0.9 }]}
+                style={({ pressed }) => [styles.card, pressed && { opacity: 0.9 }, isSuper && { borderColor: theme.gold, borderWidth: 2 }]}
               >
                 <LinearGradient
-                  colors={c as any}
+                  colors={isSuper ? ["#B45309", "#D4AF37"] : c as any}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 1 }}
                   style={styles.grad}
                 >
                   <Ionicons name={ic} size={40} color="#fff" />
-                  <Text style={styles.catName}>{item.name}</Text>
+                  <Text style={styles.catName}>{item.display_name || item.name}</Text>
+                  {isSuper && (
+                    <Text style={{ color: "#FFE4A1", fontSize: 10, fontWeight: "700" }}>⭐ SÜPER FAVORİ</Text>
+                  )}
                   <Text style={styles.catCount}>{item.count} kanal</Text>
                 </LinearGradient>
               </Pressable>
