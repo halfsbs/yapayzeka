@@ -226,7 +226,7 @@ export const api = {
     const qs = p.toString();
     return req<Channel[]>(`/channels${qs ? `?${qs}` : ""}`);
   },
-  proxyUrl: (id: string) => `${BASE}/api/channels/${id}/proxy`,
+  stream: (id: string) => req<{ stream_url: string; stream_urls?: string[] }>(`/channels/${id}/stream`),
   addFav: (channel_id: string) => req("/favorites", { method: "POST", body: JSON.stringify({ channel_id }) }),
   delFav: (id: string) => req(`/favorites/${id}`, { method: "DELETE" }),
   favorites: () => req<Channel[]>("/favorites"),
