@@ -212,6 +212,76 @@ class FavBody(BaseModel):
     channel_id: str
 
 
+# ---------- Kategori Yönetim Sistemi ----------
+class CategoryAccess(BaseModel):
+    """open=herkese açık, vip=sadece VIP, closed=kapalı (kimse göremez)"""
+    name: str
+    display_name: Optional[str] = None          # Admin'in verdiği özel isim
+    access: Literal["open", "vip", "closed"] = "open"
+    order: int = 0
+
+
+class CategoryAccessUpdate(BaseModel):
+    display_name: Optional[str] = None
+    access: Optional[Literal["open", "vip", "closed"]] = None
+    order: Optional[int] = None
+
+
+class CategoryMerge(BaseModel):
+    sources: List[str]   # birleştirilecek kategori isimleri
+    target: str          # yeni isim
+
+
+class CategorySplit(BaseModel):
+    source: str
+    targets: List[str]   # her hedef için {'name': ..., 'filter': ...} gerekmez; sadece isim ver, kanallar önce source olarak kalır, admin sonra taşır
+
+
+# ---------- VIP Paket Sistemi ----------
+class VipPackage(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    categories: List[str] = []          # Bu pakette hangi kategoriler var
+    channel_ids: List[str] = []         # Ek bireysel kanallar
+    active: bool = True
+    created_at: datetime
+
+
+class VipPackageCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    categories: List[str] = []
+    channel_ids: List[str] = []
+    active: bool = True
+
+
+# ---------- Kullanıcı Kategori Erişimi ----------
+class UserCategoryGrant(BaseModel):
+    id: str
+    user_id: str
+    username: str
+    package_ids: List[str] = []         # Atanan VIP paketleri
+    extra_categories: List[str] = []    # Bireysel ek kategoriler
+    extra_channel_ids: List[str] = []   # Bireysel ek kanallar
+    superfav_name: Optional[str] = None # Özel koleksiyon adı
+    superfav_channel_ids: List[str] = []# Özel koleksiyon kanalları
+
+
+class UserGrantUpdate(BaseModel):
+    package_ids: Optional[List[str]] = None
+    extra_categories: Optional[List[str]] = None
+    extra_channel_ids: Optional[List[str]] = None
+    superfav_name: Optional[str] = None
+    superfav_channel_ids: Optional[List[str]] = None
+
+
+# ---------- Normal Kullanıcı İçin GitHub/Varsayılan Kaynak ----------
+class DefaultSourceUpdate(BaseModel):
+    url: str    # Normal kullanıcılara gösterilecek M3U URL'si (GitHub vb.)
+    name: str = "Ücretsiz Kanallar"
+
+
 # ---------- Helpers ----------
 def hash_password(pw: str) -> str:
     return bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
@@ -799,15 +869,82 @@ async def get_settings(user: dict = Depends(get_current_user)):
     }
 
 
+# ---------- Helpers: Kategori Erişim Sistemi ----------
+async def get_accessible_categories(user: dict) -> Optional[List[str]]:
+    """
+    Kullanıcının görebileceği kategori listesini döner.
+    None = tüm açık kategoriler (VIP veya admin).
+    Liste = sadece bu kategoriler görünür.
+    """
+    role = user.get("role", "user")
+    if role == "admin":
+        return None  # Admin her şeyi görür
+
+    # Tüm kategori config'lerini çek
+    cat_configs = await db.category_configs.find({}, {"_id": 0}).to_list(2000)
+    config_map = {c["name"]: c for c in cat_configs}
+
+    # Kullanıcı erişim hakları
+    grant = await db.user_category_grants.find_one({"user_id": user["id"]}, {"_id": 0})
+
+    allowed_cats: set = set()
+
+    if role == "vip" or is_vip_active(user):
+        # VIP kullanıcı: açık + vip kategoriler + atanan paketler/kategoriler
+        for c in cat_configs:
+            if c.get("access", "open") in ("open", "vip"):
+                allowed_cats.add(c["name"])
+        # Henüz config'de olmayan (yeni gelen) kategoriler de açık say
+        # (bunları sync sonrası admin yapılandıracak)
+    else:
+        # Normal kullanıcı: sadece "open" kategoriler
+        for c in cat_configs:
+            if c.get("access", "open") == "open":
+                allowed_cats.add(c["name"])
+
+    # Bireysel grant'lar (hem VIP hem normal için geçerli)
+    if grant:
+        # Paket erişimleri
+        for pkg_id in grant.get("package_ids", []):
+            pkg = await db.vip_packages.find_one({"id": pkg_id}, {"_id": 0})
+            if pkg and pkg.get("active"):
+                allowed_cats.update(pkg.get("categories", []))
+        # Bireysel ek kategoriler
+        allowed_cats.update(grant.get("extra_categories", []))
+        # Superfav koleksiyonu varsa ona özel sanal kategori
+        if grant.get("superfav_name"):
+            allowed_cats.add(grant["superfav_name"])
+
+    return list(allowed_cats)
+
+
+async def get_accessible_channel_ids(user: dict) -> Optional[List[str]]:
+    """Kullanıcıya bireysel atanmış kanal ID'leri. None = kısıtlama yok."""
+    grant = await db.user_category_grants.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not grant:
+        return None
+    extra = grant.get("extra_channel_ids", [])
+    superfav = grant.get("superfav_channel_ids", [])
+    pkg_channels: List[str] = []
+    for pkg_id in grant.get("package_ids", []):
+        pkg = await db.vip_packages.find_one({"id": pkg_id}, {"_id": 0})
+        if pkg and pkg.get("active"):
+            pkg_channels.extend(pkg.get("channel_ids", []))
+    combined = list(set(extra + superfav + pkg_channels))
+    return combined if combined else None
+
+
 # ---------- Channels ----------
 @api_router.get("/categories")
 async def categories(user: dict = Depends(get_current_user)):
     match: dict = {"hidden": {"$ne": True}}
     if not user.get("adult_allowed"):
         match["adult"] = {"$ne": True}
-    if not user.get("sports_allowed"):  # ENTEGRE EDİLDİ
+    if not user.get("sports_allowed"):
         match["sport"] = {"$ne": True}
-        
+
+    accessible = await get_accessible_categories(user)
+
     pipeline = [
         {"$match": match},
         {"$project": {"cats": {"$cond": [
@@ -819,8 +956,41 @@ async def categories(user: dict = Depends(get_current_user)):
         {"$group": {"_id": "$cats", "count": {"$sum": 1}}},
         {"$sort": {"_id": 1}},
     ]
-    cats = await db.channels.aggregate(pipeline).to_list(1000)
-    return [{"name": c["_id"], "count": c["count"]} for c in cats if c["_id"]]
+    cats = await db.channels.aggregate(pipeline).to_list(2000)
+
+    # Kategori config'lerinden display_name ve order al
+    cat_configs_list = await db.category_configs.find({}, {"_id": 0}).to_list(2000)
+    display_map = {c["name"]: c.get("display_name") or c["name"] for c in cat_configs_list}
+    order_map = {c["name"]: c.get("order", 999) for c in cat_configs_list}
+
+    result = []
+    for c in cats:
+        raw_name = c["_id"]
+        if not raw_name:
+            continue
+        if accessible is not None and raw_name not in accessible:
+            continue
+        result.append({
+            "name": raw_name,
+            "display_name": display_map.get(raw_name, raw_name),
+            "count": c["count"],
+            "order": order_map.get(raw_name, 999),
+        })
+
+    # Superfav kategori: grant varsa ekle
+    grant = await db.user_category_grants.find_one({"user_id": user["id"]}, {"_id": 0})
+    if grant and grant.get("superfav_name") and grant.get("superfav_channel_ids"):
+        sf_name = grant["superfav_name"]
+        result.append({
+            "name": sf_name,
+            "display_name": sf_name,
+            "count": len(grant["superfav_channel_ids"]),
+            "order": -1,
+            "is_superfav": True,
+        })
+
+    result.sort(key=lambda x: x["order"])
+    return result
 
 
 @api_router.get("/channels", response_model=List[Channel])
@@ -834,17 +1004,49 @@ async def list_channels(
     page = max(1, page)
     limit = max(1, min(limit, 500))
     query: dict = {"hidden": {"$ne": True}}
-    if category and category not in ("Tumu", "Tümü"):
-        query["$or"] = [{"categories": category}, {"category": category}]
-    if q:
-        query["name"] = {"$regex": re.escape(q), "$options": "i"}
-        
+
     # Kullanıcı yetki filtreleri
     if not user.get("adult_allowed"):
         query["adult"] = {"$ne": True}
-    if not user.get("sports_allowed"):  # ENTEGRE EDİLDİ
+    if not user.get("sports_allowed"):
         query["sport"] = {"$ne": True}
-        
+
+    # Kategori erişim sistemi
+    accessible = await get_accessible_categories(user)
+    grant = await db.user_category_grants.find_one({"user_id": user["id"]}, {"_id": 0})
+
+    # Superfav koleksiyonu talep ediliyorsa
+    if category and grant and category == grant.get("superfav_name"):
+        sf_ids = grant.get("superfav_channel_ids", [])
+        if sf_ids:
+            query["id"] = {"$in": sf_ids}
+        else:
+            return []
+    else:
+        if category and category not in ("Tumu", "Tümü"):
+            # Kullanıcı bu kategoriye erişebiliyor mu?
+            if accessible is not None and category not in accessible:
+                raise HTTPException(403, "Bu kategoriye erişim izniniz yok")
+            query["$or"] = [{"categories": category}, {"category": category}]
+        elif accessible is not None and user.get("role") != "admin":
+            # Kategori belirtilmemişse sadece erişilebilir kategorilerdeki kanallar
+            # + bireysel atanmış kanallar
+            extra_ids = await get_accessible_channel_ids(user)
+            cat_condition: dict = {"$or": [
+                {"categories": {"$in": accessible}},
+                {"category": {"$in": accessible}},
+            ]}
+            if extra_ids:
+                cat_condition = {"$or": [
+                    {"categories": {"$in": accessible}},
+                    {"category": {"$in": accessible}},
+                    {"id": {"$in": extra_ids}},
+                ]}
+            query.update(cat_condition)
+
+    if q:
+        query["name"] = {"$regex": re.escape(q), "$options": "i"}
+
     skip = (page - 1) * limit
     docs = await db.channels.find(
         query, {"_id": 0, "stream_url_enc": 0, "source_id": 0, "category_overridden": 0, "vip_overridden": 0, "name_overridden": 0, "adult_overridden": 0, "sport_overridden": 0}
@@ -1116,6 +1318,237 @@ async def admin_delete_category(name: str, user: dict = Depends(require_admin)):
         {"$set": {"hidden": True}},
     )
     return {"ok": True, "hidden": res.modified_count}
+
+
+# ---------- Admin: Kategori Erişim Yönetimi ----------
+@api_router.get("/admin/category-configs")
+async def admin_list_category_configs(user: dict = Depends(require_admin)):
+    """Tüm kategorileri config bilgileriyle döner (DB'deki + kanallardan otomatik keşfedilen)."""
+    # DB'deki config'ler
+    configs = await db.category_configs.find({}, {"_id": 0}).to_list(2000)
+    config_map = {c["name"]: c for c in configs}
+
+    # Kanallardan tüm kategorileri bul
+    pipeline = [
+        {"$project": {"cats": {"$cond": [
+            {"$gt": [{"$size": {"$ifNull": ["$categories", []]}}, 0]},
+            "$categories", ["$category"],
+        ]}}},
+        {"$unwind": "$cats"},
+        {"$group": {"_id": "$cats", "count": {"$sum": 1}}},
+        {"$sort": {"_id": 1}},
+    ]
+    raw_cats = await db.channels.aggregate(pipeline).to_list(2000)
+
+    result = []
+    for c in raw_cats:
+        name = c["_id"]
+        if not name:
+            continue
+        cfg = config_map.get(name, {})
+        result.append({
+            "name": name,
+            "display_name": cfg.get("display_name") or name,
+            "access": cfg.get("access", "open"),
+            "order": cfg.get("order", 999),
+            "channel_count": c["count"],
+        })
+    result.sort(key=lambda x: x["order"])
+    return result
+
+
+@api_router.patch("/admin/category-configs/{name}")
+async def admin_update_category_config(name: str, body: CategoryAccessUpdate, user: dict = Depends(require_admin)):
+    """Kategori erişim tipini ve görüntü adını günceller."""
+    update: dict = {}
+    if body.display_name is not None:
+        update["display_name"] = body.display_name
+    if body.access is not None:
+        update["access"] = body.access
+    if body.order is not None:
+        update["order"] = body.order
+    if not update:
+        raise HTTPException(400, "Güncellenecek alan yok")
+    await db.category_configs.update_one(
+        {"name": name},
+        {"$set": {"name": name, **update}},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+@api_router.post("/admin/category-configs/bulk")
+async def admin_bulk_update_category_configs(
+    body: List[dict],
+    user: dict = Depends(require_admin)
+):
+    """Çoklu kategori config güncellemesi."""
+    from pymongo import UpdateOne
+    ops = []
+    for item in body:
+        name = item.get("name")
+        if not name:
+            continue
+        update = {k: v for k, v in item.items() if k != "name" and k != "channel_count"}
+        if update:
+            ops.append(UpdateOne({"name": name}, {"$set": {"name": name, **update}}, upsert=True))
+    if ops:
+        await db.category_configs.bulk_write(ops)
+    return {"ok": True, "updated": len(ops)}
+
+
+@api_router.post("/admin/categories/merge")
+async def admin_merge_categories(body: CategoryMerge, user: dict = Depends(require_admin)):
+    """Birden fazla kategoriyi tek bir kategoride birleştirir."""
+    for src in body.sources:
+        if src == body.target:
+            continue
+        await db.channels.update_many(
+            {"$or": [{"category": src}, {"categories": src}]},
+            {"$set": {"category": body.target, "category_overridden": True},
+             "$addToSet": {"categories": body.target}},
+        )
+        await db.channels.update_many(
+            {"categories": src},
+            {"$pull": {"categories": src}},
+        )
+        await db.category_configs.delete_one({"name": src})
+    return {"ok": True}
+
+
+# ---------- Admin: VIP Paket Sistemi ----------
+@api_router.get("/admin/vip-packages")
+async def admin_list_vip_packages(user: dict = Depends(require_admin)):
+    docs = await db.vip_packages.find({}, {"_id": 0}).to_list(500)
+    return docs
+
+
+@api_router.post("/admin/vip-packages")
+async def admin_create_vip_package(body: VipPackageCreate, user: dict = Depends(require_admin)):
+    doc = {
+        "id": str(uuid.uuid4()),
+        **body.model_dump(),
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.vip_packages.insert_one(doc.copy())
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.patch("/admin/vip-packages/{pkg_id}")
+async def admin_update_vip_package(pkg_id: str, body: VipPackageCreate, user: dict = Depends(require_admin)):
+    upd = await db.vip_packages.find_one_and_update(
+        {"id": pkg_id},
+        {"$set": body.model_dump()},
+        return_document=ReturnDocument.AFTER, projection={"_id": 0},
+    )
+    if not upd:
+        raise HTTPException(404, "Paket bulunamadı")
+    return upd
+
+
+@api_router.delete("/admin/vip-packages/{pkg_id}")
+async def admin_delete_vip_package(pkg_id: str, user: dict = Depends(require_admin)):
+    await db.vip_packages.delete_one({"id": pkg_id})
+    # Bu paketi kullanan grant'lardan da çıkar
+    await db.user_category_grants.update_many(
+        {"package_ids": pkg_id},
+        {"$pull": {"package_ids": pkg_id}},
+    )
+    return {"ok": True}
+
+
+# ---------- Admin: Kullanıcı Kategori/Paket Atama ----------
+@api_router.get("/admin/user-grants")
+async def admin_list_user_grants(user: dict = Depends(require_admin)):
+    grants = await db.user_category_grants.find({}, {"_id": 0}).to_list(5000)
+    return grants
+
+
+@api_router.get("/admin/user-grants/{user_id}")
+async def admin_get_user_grant(user_id: str, user: dict = Depends(require_admin)):
+    grant = await db.user_category_grants.find_one({"user_id": user_id}, {"_id": 0})
+    if not grant:
+        target = await db.users.find_one({"id": user_id}, {"_id": 0, "username": 1})
+        if not target:
+            raise HTTPException(404, "Kullanıcı bulunamadı")
+        return {
+            "user_id": user_id,
+            "username": target.get("username", ""),
+            "package_ids": [],
+            "extra_categories": [],
+            "extra_channel_ids": [],
+            "superfav_name": None,
+            "superfav_channel_ids": [],
+        }
+    return grant
+
+
+@api_router.put("/admin/user-grants/{user_id}")
+async def admin_set_user_grant(user_id: str, body: UserGrantUpdate, user: dict = Depends(require_admin)):
+    target = await db.users.find_one({"id": user_id}, {"_id": 0, "username": 1})
+    if not target:
+        raise HTTPException(404, "Kullanıcı bulunamadı")
+
+    existing = await db.user_category_grants.find_one({"user_id": user_id}, {"_id": 0}) or {}
+    update: dict = {
+        "user_id": user_id,
+        "username": target.get("username", ""),
+        "package_ids": body.package_ids if body.package_ids is not None else existing.get("package_ids", []),
+        "extra_categories": body.extra_categories if body.extra_categories is not None else existing.get("extra_categories", []),
+        "extra_channel_ids": body.extra_channel_ids if body.extra_channel_ids is not None else existing.get("extra_channel_ids", []),
+        "superfav_name": body.superfav_name if body.superfav_name is not None else existing.get("superfav_name"),
+        "superfav_channel_ids": body.superfav_channel_ids if body.superfav_channel_ids is not None else existing.get("superfav_channel_ids", []),
+    }
+    await db.user_category_grants.update_one(
+        {"user_id": user_id},
+        {"$set": update},
+        upsert=True,
+    )
+    return update
+
+
+@api_router.delete("/admin/user-grants/{user_id}")
+async def admin_delete_user_grant(user_id: str, user: dict = Depends(require_admin)):
+    await db.user_category_grants.delete_one({"user_id": user_id})
+    return {"ok": True}
+
+
+# ---------- Admin: Varsayılan/Normal Kullanıcı Kaynağı ----------
+@api_router.get("/admin/default-source")
+async def admin_get_default_source(user: dict = Depends(require_admin)):
+    doc = await db.settings.find_one({"_id": "default_source"}, {"_id": 0}) or {}
+    return doc
+
+
+@api_router.put("/admin/default-source")
+async def admin_set_default_source(body: DefaultSourceUpdate, user: dict = Depends(require_admin)):
+    """Normal kullanıcılara gösterilecek kanalların M3U kaynağını ayarla (GitHub vb.)."""
+    await db.settings.update_one(
+        {"_id": "default_source"},
+        {"$set": {"url": body.url, "name": body.name, "updated_at": datetime.now(timezone.utc)}},
+        upsert=True,
+    )
+    # Eğer bu kaynak DB'de yoksa otomatik M3U kaynağı olarak ekle/güncelle
+    existing = await db.m3u_sources.find_one({"is_default": True})
+    if existing:
+        await db.m3u_sources.update_one(
+            {"id": existing["id"]},
+            {"$set": {"url_enc": fernet.encrypt(body.url.encode()).decode(), "name": body.name}},
+        )
+        asyncio.create_task(sync_source({**existing, "url_enc": fernet.encrypt(body.url.encode()).decode()}))
+    else:
+        sid = str(uuid.uuid4())
+        new_src = {
+            "id": sid, "name": body.name,
+            "url_enc": fernet.encrypt(body.url.encode()).decode(),
+            "active": True, "last_synced": None, "channel_count": 0,
+            "is_default": True,
+            "created_at": datetime.now(timezone.utc),
+        }
+        await db.m3u_sources.insert_one(new_src)
+        asyncio.create_task(sync_source(new_src))
+    return {"ok": True}
 
 
 # ---------- Admin: Users ----------
@@ -1440,6 +1873,9 @@ async def on_start():
         await db.refresh_tokens.create_index("user_id")
         await db.refresh_tokens.create_index("expires_at", expireAfterSeconds=0)
         await db.m3u_sources.create_index("id", unique=True)
+        await db.category_configs.create_index("name", unique=True)
+        await db.vip_packages.create_index("id", unique=True)
+        await db.user_category_grants.create_index("user_id", unique=True)
         logger.info("MongoDB indexes created")
     except Exception as e:
         logger.warning(f"Index creation skipped: {e}")
