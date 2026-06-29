@@ -382,6 +382,9 @@ def normalize_name(s: str) -> str:
     if not s:
         return ""
     x = s.lower()
+    # Sayıları ve harfleri ayır: TRT1 → TRT 1, 4K → 4 K
+    x = re.sub(r'([a-zA-Z]+)(\d)', r' ', x)
+    x = re.sub(r'(\d)([a-zA-Z]+)', r' ', x)
     x = _NORM_PUNCT.sub(" ", x)
     x = _NORM_STRIP.sub(" ", x)
     x = _NORM_WS.sub(" ", x).strip()
@@ -1097,16 +1100,62 @@ async def get_stream(channel_id: str, user: dict = Depends(get_current_user)):
             {"id": {"$ne": channel_id}, "hidden": {"$ne": True}, "norm_name": nname},
             {"_id": 0, "stream_url_enc": 1},
         ).limit(50).to_list(50)
-        tokens = [t for t in nname.split() if len(t) >= 3]
+        # 2. Token-based partial match (skorlama ile)
+        tokens = [t for t in nname.split() if len(t) >= 2]
         partial_docs: list = []
-        if tokens:
-            regex = "|".join(re.escape(t) for t in tokens[:4])
+        if tokens and len(fallback_urls) < 15:
+            regex = "|".join(re.escape(t) for t in tokens[:6])
             partial_docs = await db.channels.find(
                 {"id": {"$ne": channel_id}, "hidden": {"$ne": True},
                  "norm_name": {"$regex": regex, "$ne": nname}},
-                {"_id": 0, "stream_url_enc": 1},
-            ).limit(50).to_list(50)
-        for d in (exact + partial_docs):
+                {"_id": 0, "stream_url_enc": 1, "norm_name": 1},
+            ).limit(100).to_list(100)
+
+            # En çok ortak token olanları önceliklendir
+            scored = []
+            for d in partial_docs:
+                d_tokens = set(d.get("norm_name", "").split())
+                score = len(d_tokens.intersection(set(tokens)))
+                if score >= 2:
+                    scored.append((score, d))
+
+            scored.sort(reverse=True, key=lambda x: x[0])
+
+            for _, d in scored:
+                try:
+                    u = fernet.decrypt(d["stream_url_enc"].encode()).decode()
+                    if u and u not in seen_urls:
+                        seen_urls.add(u)
+                        fallback_urls.append(u)
+                        if len(fallback_urls) >= 15:
+                            break
+                except Exception:
+                    continue
+
+        # 3. Name alanında regex arama (norm_name eşleşmezse)
+        if len(fallback_urls) < 15:
+            ch_name = ch.get("name", "")
+            if ch_name:
+                name_pattern = '.*'.join(re.escape(part) for part in ch_name.lower().split())
+                name_matches = await db.channels.find(
+                    {"id": {"$ne": channel_id}, "hidden": {"$ne": True},
+                     "name": {"$regex": name_pattern, "$options": "i", "$ne": ch_name}},
+                    {"_id": 0, "stream_url_enc": 1},
+                ).limit(30).to_list(30)
+                for d in name_matches:
+                    try:
+                        u = fernet.decrypt(d["stream_url_enc"].encode()).decode()
+                        if u and u not in seen_urls:
+                            seen_urls.add(u)
+                            fallback_urls.append(u)
+                            if len(fallback_urls) >= 15:
+                                break
+                    except Exception:
+                        continue
+
+        for d in exact:
+            if d in [x[1] for x in scored] or d in name_matches:
+                continue
             try:
                 u = fernet.decrypt(d["stream_url_enc"].encode()).decode()
                 if u and u not in seen_urls:
@@ -1901,6 +1950,31 @@ async def on_start():
             logger.info(f"Backfilled norm_name for {count} channels")
     except Exception as e:
         logger.warning(f"norm_name backfill skipped: {e}")
+
+    # norm_name güncelleme - eski formattakileri yeni formata çevir
+    try:
+        from pymongo import UpdateOne
+        cursor = db.channels.find({}, {"_id": 0, "id": 1, "name": 1, "norm_name": 1})
+        bulk_ops = []
+        count = 0
+        async for d in cursor:
+            new_norm = normalize_name(d.get("name", ""))
+            if new_norm and new_norm != d.get("norm_name", ""):
+                bulk_ops.append(UpdateOne(
+                    {"id": d["id"]},
+                    {"$set": {"norm_name": new_norm}}
+                ))
+                if len(bulk_ops) >= 500:
+                    await db.channels.bulk_write(bulk_ops)
+                    count += len(bulk_ops)
+                    bulk_ops = []
+        if bulk_ops:
+            await db.channels.bulk_write(bulk_ops)
+            count += len(bulk_ops)
+        if count > 0:
+            logger.info(f"Updated norm_name for {count} channels")
+    except Exception as e:
+        logger.warning(f"norm_name update skipped: {e}")
 
 
 @app.on_event("shutdown")
