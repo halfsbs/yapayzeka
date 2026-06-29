@@ -150,7 +150,6 @@ function PlayerInner({
   onFailed: () => void;
   onError: (msg: string) => void;
 }) {
-  // DÜZELTİLDİ: Hata veren expoPkg ifadesi tamamen temizlendi
   if (USE_EXPO_VIDEO && expoVideoPkg) {
     return <ExpoVideoPlayer url={url} onFailed={onFailed} onError={onError} />;
   }
@@ -173,7 +172,12 @@ function ExpoVideoPlayer({
   const useVideoPlayer = expoVideoPkg.useVideoPlayer;
   const VideoView = expoVideoPkg.VideoView;
 
-  const player = useVideoPlayer(url, (playerInstance: any) => {
+  // DÜZELTİLDİ: Oynatıcının m3u8 playlist listesini hafızaya alıp yayını dondurmasını engelliyoruz
+  const finalLiveUrl = url.includes("?") 
+    ? `${url}&_cb=${Date.now()}` 
+    : `${url}?_cb=${Date.now()}`;
+
+  const player = useVideoPlayer(finalLiveUrl, (playerInstance: any) => {
     playerInstance.loop = false;
     playerInstance.muted = false;
     playerInstance.play();
