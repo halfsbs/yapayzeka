@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useMemo } from "react";
+import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import {
   View,
   Text,
@@ -10,18 +10,24 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api";
+import { Video, ResizeMode } from "expo-av";
 
 // ============================================================
-// MODERN OYNATICI AKTİF (Kilitlenme ve donma hataları giderildi)
+// 3'LÜ OYNATICI FALLBACK SİSTEMİ
+// 1. expo-video (modern) → 2. expo-av (stabil) → 3. VLC (son kurtarıcı)
 // ============================================================
-const USE_EXPO_VIDEO = true;
 
 let expoVideoPkg: any = null;
 try {
   expoVideoPkg = require("expo-video");
 } catch (e) { /* expo-video kurulu değil */ }
 
-import { Video, ResizeMode } from "expo-av";
+let vlcPlayerPkg: any = null;
+try {
+  vlcPlayerPkg = require("react-native-vlc-media-player");
+} catch (e) { /* react-native-vlc-media-player kurulu değil */ }
+
+type PlayerMode = "expo-video" | "expo-av" | "vlc";
 
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL || "";
 
@@ -71,7 +77,7 @@ export default function Player() {
     } catch {}
   };
 
-  const tryNext = () => {
+  const tryNext = useCallback(() => {
     if (!urls) return;
     if (activeIdx + 1 < urls.length) {
       setActiveIdx((v) => v + 1);
@@ -79,7 +85,7 @@ export default function Player() {
     } else {
       setError("Tüm yayınlar denendi, kanal açılamıyor.");
     }
-  };
+  }, [urls, activeIdx]);
 
   return (
     <View style={styles.root}>
@@ -148,12 +154,82 @@ function PlayerInner({
   onFailed: () => void;
   onError: (msg: string) => void;
 }) {
-  if (USE_EXPO_VIDEO && expoVideoPkg) {
-    return <ExpoVideoPlayer url={url} onFailed={onFailed} onError={onError} />;
+  const [mode, setMode] = useState<PlayerMode>(
+    expoVideoPkg ? "expo-video" : "expo-av"
+  );
+
+  const handleError = useCallback(
+    (msg: string, currentMode: PlayerMode) => {
+      const lower = msg.toLowerCase();
+      const isCodecError =
+        lower.includes("extractor") ||
+        lower.includes("playback exception") ||
+        lower.includes("source error") ||
+        lower.includes("could read") ||
+        lower.includes("demuxer") ||
+        lower.includes("pipeline") ||
+        lower.includes("codec") ||
+        lower.includes("unsupported") ||
+        lower.includes("media") ||
+        lower.includes("none of the available");
+
+      if (currentMode === "expo-video" && isCodecError) {
+        console.log("[Player] expo-video codec hatası, expo-av'ye geçiliyor...");
+        setMode("expo-av");
+      } else if (currentMode === "expo-av" && vlcPlayerPkg) {
+        console.log("[Player] expo-av hatası, VLC'ye geçiliyor...");
+        setMode("vlc");
+      } else {
+        onError(msg);
+      }
+    },
+    [onError]
+  );
+
+  if (mode === "expo-video" && expoVideoPkg) {
+    return (
+      <ExpoVideoPlayer
+        url={url}
+        onFailed={onFailed}
+        onError={(msg) => handleError(msg, "expo-video")}
+      />
+    );
   }
-  return <ExpoAvPlayer url={url} onFailed={onFailed} onError={onError} />;
+
+  if (mode === "expo-av") {
+    return (
+      <ExpoAvPlayer
+        url={url}
+        onFailed={onFailed}
+        onError={(msg) => handleError(msg, "expo-av")}
+      />
+    );
+  }
+
+  if (mode === "vlc" && vlcPlayerPkg) {
+    return (
+      <VlcPlayer
+        url={url}
+        onFailed={onFailed}
+        onError={(msg) => handleError(msg, "vlc")}
+      />
+    );
+  }
+
+  return (
+    <View style={styles.center}>
+      <Ionicons name="warning-outline" size={50} color="orange" />
+      <Text style={styles.err}>
+        Hiçbir oynatıcı kullanılabilir değil.{"\n"}
+        Lütfen expo-av veya react-native-vlc-media-player kurun.
+      </Text>
+    </View>
+  );
 }
 
+// ============================================================
+// 1. EXPO-VIDEO (Modern)
+// ============================================================
 function ExpoVideoPlayer({
   url,
   onFailed,
@@ -170,12 +246,11 @@ function ExpoVideoPlayer({
   const useVideoPlayer = expoVideoPkg.useVideoPlayer;
   const VideoView = expoVideoPkg.VideoView;
 
-  // KESİN DÜZELTİLDİ: useMemo/useRef mantığıyla link sabitlendi. 
-  // Her saniye Date.now() değişerek player'ı baştan yaratıp dondurmayacak, 
-  // sadece ilk açılışta önbellek blokajını kıracak.
-  const finalLiveUrl = useRef(
-    url.includes("?") ? `${url}&_cb=${Date.now()}` : `${url}?_cb=${Date.now()}`
-  ).current;
+  const finalLiveUrl = useMemo(() => {
+    return url.includes("?")
+      ? `${url}&_cb=${Date.now()}`
+      : `${url}?_cb=${Date.now()}`;
+  }, [url]);
 
   const player = useVideoPlayer(finalLiveUrl, (playerInstance: any) => {
     playerInstance.loop = false;
@@ -200,7 +275,11 @@ function ExpoVideoPlayer({
         setHasError(true);
         if (!isFailedTriggered.current) {
           isFailedTriggered.current = true;
-          onError(currentError?.message || "Yayın yüklenemedi veya akış koptu");
+          const errMsg =
+            currentError?.message ||
+            currentError ||
+            "Yayın yüklenemedi veya akış koptu";
+          onError(String(errMsg));
           setTimeout(() => {
             onFailed();
           }, 1000);
@@ -235,6 +314,9 @@ function ExpoVideoPlayer({
   );
 }
 
+// ============================================================
+// 2. EXPO-AV (Stabil Fallback)
+// ============================================================
 function ExpoAvPlayer({
   url,
   onFailed,
@@ -245,11 +327,33 @@ function ExpoAvPlayer({
   onError: (msg: string) => void;
 }) {
   const failedRef = useRef(false);
-  const timerRef = useRef<number | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [buffering, setBuffering] = useState(true);
   const [ready, setReady] = useState(false);
   const [hasError, setHasError] = useState(false);
-  const videoRef = useRef<Video>(null);
+
+  const handleStatusUpdate = useCallback(
+    (status: any) => {
+      if (status.isLoaded) {
+        if (status.isPlaying || status.positionMillis > 0) {
+          setReady(true);
+        }
+        setBuffering(status.isBuffering);
+      } else {
+        if (status.error) {
+          setHasError(true);
+          if (!failedRef.current) {
+            failedRef.current = true;
+            onError("Yayın akışı yüklenemedi (expo-av)");
+            timerRef.current = setTimeout(() => {
+              onFailed();
+            }, 1000);
+          }
+        }
+      }
+    },
+    [onError, onFailed]
+  );
 
   useEffect(() => {
     failedRef.current = false;
@@ -265,37 +369,89 @@ function ExpoAvPlayer({
   return (
     <View style={{ flex: 1, backgroundColor: "#000" }}>
       <Video
-        ref={videoRef}
         source={{ uri: url }}
         style={{ flex: 1 }}
         useNativeControls
         resizeMode={ResizeMode.CONTAIN}
         shouldPlay
         isLooping={false}
-        onPlaybackStatusUpdate={(status) => {
-          if (status.isLoaded) {
-            if (status.isPlaying || status.positionMillis > 0) {
-              setReady(true);
-            }
-            setBuffering(status.isBuffering);
-          } else {
-            if (status.error) {
-              setHasError(true)
-              if (!failedRef.current) {
-                failedRef.current = true;
-                onError("Yayın akışı yüklenemedi");
-                timerRef.current = setTimeout(() => {
-                  onFailed();
-                }, 1000);
-              }
-            }
-          }
-        }}
+        onPlaybackStatusUpdate={handleStatusUpdate}
       />
       {(buffering || !ready) && !hasError && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator color="#fff" size="large" />
-          <Text style={{ color: "#aaa", marginTop: 8 }}>Yayın yükleniyor...</Text>
+          <Text style={{ color: "#aaa", marginTop: 8 }}>
+            Yayın yükleniyor (expo-av)...
+          </Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+// ============================================================
+// 3. VLC PLAYER (Son Kurtarıcı)
+// ============================================================
+function VlcPlayer({
+  url,
+  onFailed,
+  onError,
+}: {
+  url: string;
+  onFailed: () => void;
+  onError: (msg: string) => void;
+}) {
+  const [ready, setReady] = useState(false);
+  const [hasError, setHasError] = useState(false);
+  const isFailedTriggered = useRef(false);
+
+  const VLCPlayer = vlcPlayerPkg.VLCPlayer;
+
+  const handleError = useCallback(
+    (e: any) => {
+      setHasError(true);
+      if (!isFailedTriggered.current) {
+        isFailedTriggered.current = true;
+        const msg =
+          e?.error?.message || e?.error || "VLC oynatıcı hatası";
+        onError(String(msg));
+        setTimeout(() => onFailed(), 1000);
+      }
+    },
+    [onError, onFailed]
+  );
+
+  return (
+    <View style={{ flex: 1, backgroundColor: "#000" }}>
+      <VLCPlayer
+        source={{
+          uri: url,
+          initType: 1,
+          initOptions: [
+            "--network-caching=150",
+            "--live-caching=150",
+            "--file-caching=150",
+            "--codec=avcodec,all",
+          ],
+        }}
+        autoplay={true}
+        autoAspectRatio={true}
+        videoAspectRatio="16:9"
+        resizeMode="contain"
+        style={{ flex: 1 }}
+        onError={handleError}
+        onBuffering={(e: any) => {
+          if (e?.isBuffering === 0) setReady(true);
+        }}
+        onPlaying={() => setReady(true)}
+        onStopped={() => setReady(false)}
+      />
+      {!ready && !hasError && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator color="#fff" size="large" />
+          <Text style={{ color: "#aaa", marginTop: 8 }}>
+            VLC ile yükleniyor...
+          </Text>
         </View>
       )}
     </View>
