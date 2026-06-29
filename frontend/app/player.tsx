@@ -44,8 +44,9 @@ export default function Player() {
         if (!isMounted) return;
         setFav(me.favorites.includes(id));
 
-        const proxyUrl = api.proxyUrl(id);
-        setUrls([proxyUrl]);
+        const streamRes = await api.stream(id);
+        const allUrls = [streamRes.stream_url, ...(streamRes.stream_urls || [])].filter(Boolean);
+        setUrls(allUrls);
         setActiveIdx(0);
         setError(null);
       } catch (e: any) {
