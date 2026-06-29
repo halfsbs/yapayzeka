@@ -245,7 +245,7 @@ function ExpoAvPlayer({
   onError: (msg: string) => void;
 }) {
   const failedRef = useRef(false);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<number | null>(null);
   const [buffering, setBuffering] = useState(true);
   const [ready, setReady] = useState(false);
   const [hasError, setHasError] = useState(false);
