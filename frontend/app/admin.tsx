@@ -9,10 +9,10 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import {
   api, theme, clearTokens, M3USource, User, Role, AdminChannel,
-  AppSettings, VipPlan, CryptoWallet, Ad,
+  AppSettings, VipPlan, CryptoWallet, Ad, CategoryConfig, VipPackage, UserGrant,
 } from "@/src/api";
 
-type Tab = "dash" | "sources" | "channels" | "users" | "settings" | "vip" | "ads";
+type Tab = "dash" | "sources" | "channels" | "categories" | "packages" | "users" | "settings" | "vip" | "ads";
 
 export default function Admin() {
   const router = useRouter();
@@ -44,6 +44,8 @@ export default function Admin() {
     { key: "dash", label: "Özet", icon: "speedometer" },
     { key: "sources", label: "Kaynaklar", icon: "cloud" },
     { key: "channels", label: "Kanallar", icon: "tv" },
+    { key: "categories", label: "Kategoriler", icon: "layers" },
+    { key: "packages", label: "Paketler", icon: "gift" },
     { key: "users", label: "Kullanıcılar", icon: "people" },
     { key: "vip", label: "VIP/Kripto", icon: "star" },
     { key: "ads", label: "Reklamlar", icon: "megaphone" },
@@ -83,6 +85,8 @@ export default function Admin() {
       {tab === "dash" && <DashTab />}
       {tab === "sources" && <SourcesTab onToast={showToast} />}
       {tab === "channels" && <ChannelsTab onToast={showToast} />}
+      {tab === "categories" && <CategoriesTab onToast={showToast} />}
+      {tab === "packages" && <PackagesTab onToast={showToast} />}
       {tab === "users" && <UsersTab onToast={showToast} />}
       {tab === "vip" && <VipCryptoTab onToast={showToast} />}
       {tab === "ads" && <AdsTab onToast={showToast} />}
@@ -123,6 +127,316 @@ function DashTab() {
           </View>
         ))}
       </View>
+    </ScrollView>
+  );
+}
+
+// ---------- CATEGORIES ----------
+const ACCESS_LABELS: Record<string, { label: string; color: string }> = {
+  open:   { label: "Herkese Açık", color: theme.success },
+  vip:    { label: "Sadece VIP",   color: theme.gold },
+  closed: { label: "Kapalı",       color: theme.danger },
+};
+
+function CategoriesTab({ onToast }: { onToast: (m: string) => void }) {
+  const [cats, setCats] = useState<CategoryConfig[]>([]);
+  const [editing, setEditing] = useState<CategoryConfig | null>(null);
+  const [mergeMode, setMergeMode] = useState(false);
+  const [mergeSelected, setMergeSelected] = useState<string[]>([]);
+  const [mergeName, setMergeName] = useState("");
+  const [defUrl, setDefUrl] = useState("");
+  const [defName, setDefName] = useState("Ücretsiz Kanallar");
+  const [defBusy, setDefBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      const data = await api.adminCategoryConfigs();
+      setCats(data);
+    } catch {}
+  };
+
+  const loadDefSource = async () => {
+    try {
+      const d = await api.adminGetDefaultSource();
+      if (d.url) setDefUrl(d.url);
+      if (d.name) setDefName(d.name);
+    } catch {}
+  };
+
+  useEffect(() => { load(); loadDefSource(); }, []);
+
+  const saveAccess = async (name: string, access: string) => {
+    try {
+      await api.adminUpdateCategoryConfig(name, { access: access as any });
+      onToast("Erişim güncellendi");
+      load();
+    } catch (e: any) { onToast(e.message); }
+  };
+
+  const saveEdit = async () => {
+    if (!editing) return;
+    try {
+      await api.adminUpdateCategoryConfig(editing.name, {
+        display_name: editing.display_name,
+        access: editing.access,
+        order: editing.order,
+      });
+      onToast("Kaydedildi");
+      setEditing(null);
+      load();
+    } catch (e: any) { onToast(e.message); }
+  };
+
+  const doMerge = async () => {
+    if (mergeSelected.length < 2 || !mergeName.trim()) { onToast("En az 2 kategori ve hedef isim girin"); return; }
+    try {
+      await api.adminMergeCategories(mergeSelected, mergeName.trim());
+      onToast("Birleştirildi"); setMergeMode(false); setMergeSelected([]); setMergeName(""); load();
+    } catch (e: any) { onToast(e.message); }
+  };
+
+  const saveDefaultSource = async () => {
+    if (!defUrl.trim()) { onToast("URL giriniz"); return; }
+    setDefBusy(true);
+    try {
+      await api.adminSetDefaultSource(defUrl.trim(), defName.trim());
+      onToast("Varsayılan kaynak ayarlandı ve senkronize ediliyor...");
+    } catch (e: any) { onToast(e.message); }
+    finally { setDefBusy(false); }
+  };
+
+  const toggleMergeSelect = (name: string) => {
+    setMergeSelected(prev =>
+      prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]
+    );
+  };
+
+  return (
+    <ScrollView contentContainerStyle={styles.content}>
+      {/* Normal Kullanıcı Kaynağı */}
+      <Text style={styles.sectionTitle}>Normal Kullanıcı Kaynağı (GitHub vb.)</Text>
+      <Text style={{ color: theme.textDim, fontSize: 12, marginBottom: 8 }}>
+        Kayıtlı ama VIP olmayan kullanıcılara gösterilecek M3U. Buradaki kategoriler otomatik "Herkese Açık" işaretlenir.
+      </Text>
+      <View style={styles.inputWrap}>
+        <Ionicons name="link-outline" size={16} color={theme.textDim} />
+        <TextInput value={defUrl} onChangeText={setDefUrl} placeholder="https://raw.githubusercontent.com/..." placeholderTextColor={theme.textMute} style={styles.input} autoCapitalize="none" />
+      </View>
+      <View style={[styles.inputWrap, { marginTop: 6 }]}>
+        <Ionicons name="bookmark-outline" size={16} color={theme.textDim} />
+        <TextInput value={defName} onChangeText={setDefName} placeholder="Kaynak adı" placeholderTextColor={theme.textMute} style={styles.input} />
+      </View>
+      <Pressable onPress={saveDefaultSource} disabled={defBusy} style={[styles.primaryBtn, { marginTop: 8 }]}>
+        {defBusy ? <ActivityIndicator color="#fff" size="small" /> : <><Ionicons name="save" size={16} color="#fff" /><Text style={styles.primaryText}>Kaydet & Senkronize Et</Text></>}
+      </Pressable>
+
+      {/* Kategori Birleştirme */}
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 16 }}>
+        <Text style={styles.sectionTitle}>Kategoriler ({cats.length})</Text>
+        <Pressable onPress={() => { setMergeMode(!mergeMode); setMergeSelected([]); }} style={[styles.miniBtn, mergeMode && styles.miniBtnActive]}>
+          <Ionicons name="git-merge" size={13} color={mergeMode ? "#fff" : theme.text} />
+          <Text style={[styles.miniBtnText, mergeMode && { color: "#fff" }]}>Birleştir</Text>
+        </Pressable>
+      </View>
+
+      {mergeMode && (
+        <View style={{ backgroundColor: theme.surface, borderRadius: 12, padding: 12, borderWidth: 1, borderColor: theme.gold, gap: 8, marginBottom: 8 }}>
+          <Text style={{ color: theme.gold, fontWeight: "700", fontSize: 13 }}>
+            Birleştirilecekleri seç ({mergeSelected.length} seçili), ardından hedef ismi gir:
+          </Text>
+          <View style={styles.inputWrap}>
+            <TextInput value={mergeName} onChangeText={setMergeName} placeholder="Yeni kategori adı" placeholderTextColor={theme.textMute} style={styles.input} />
+          </View>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <Pressable onPress={() => { setMergeMode(false); setMergeSelected([]); }} style={[styles.secondaryBtn, { flex: 1 }]}><Text style={styles.secondaryText}>İptal</Text></Pressable>
+            <Pressable onPress={doMerge} style={[styles.primaryBtn, { flex: 1, backgroundColor: theme.gold }]}><Text style={styles.primaryText}>Birleştir</Text></Pressable>
+          </View>
+        </View>
+      )}
+
+      {cats.map(c => {
+        const acc = ACCESS_LABELS[c.access] || ACCESS_LABELS.open;
+        const isSel = mergeSelected.includes(c.name);
+        return (
+          <Pressable
+            key={c.name}
+            onPress={() => mergeMode ? toggleMergeSelect(c.name) : setEditing({ ...c })}
+            style={[styles.chRow, isSel && { borderColor: theme.gold }]}
+          >
+            {mergeMode && (
+              <View style={{ width: 20, height: 20, borderRadius: 10, borderWidth: 2,
+                borderColor: isSel ? theme.gold : theme.border,
+                backgroundColor: isSel ? theme.gold : "transparent",
+                alignItems: "center", justifyContent: "center" }}>
+                {isSel && <Ionicons name="checkmark" size={12} color="#000" />}
+              </View>
+            )}
+            <View style={{ flex: 1 }}>
+              <Text style={styles.chName}>{c.display_name !== c.name ? `${c.display_name}` : c.name}</Text>
+              {c.display_name !== c.name && <Text style={{ color: theme.textMute, fontSize: 10 }}>({c.name})</Text>}
+              <Text style={styles.chCat}>{c.channel_count} kanal · sıra: {c.order}</Text>
+            </View>
+            {/* Hızlı erişim değiştirme */}
+            {!mergeMode && (
+              <View style={{ flexDirection: "row", gap: 4 }}>
+                {(["open", "vip", "closed"] as const).map(a => (
+                  <Pressable key={a} onPress={(e) => { saveAccess(c.name, a); }}
+                    style={[styles.miniBtn, c.access === a && { backgroundColor: ACCESS_LABELS[a].color + "33", borderColor: ACCESS_LABELS[a].color }]}>
+                    <Text style={[styles.miniBtnText, c.access === a && { color: ACCESS_LABELS[a].color }]}>
+                      {a === "open" ? "A" : a === "vip" ? "V" : "K"}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+          </Pressable>
+        );
+      })}
+
+      {/* Düzenleme Modalı */}
+      <Modal visible={!!editing} transparent animationType="slide" onRequestClose={() => setEditing(null)}>
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalRoot}>
+          <Pressable style={styles.modalBack} onPress={() => setEditing(null)} />
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Kategori Ayarı</Text>
+            <Text style={styles.modalSub}>{editing?.name}</Text>
+            <View style={styles.inputWrap}>
+              <TextInput value={editing?.display_name || ""} onChangeText={v => setEditing(e => e ? { ...e, display_name: v } : e)}
+                placeholder="Görünen ad (boş = orijinal)" placeholderTextColor={theme.textMute} style={styles.input} />
+            </View>
+            <View style={styles.inputWrap}>
+              <TextInput value={String(editing?.order ?? 999)} onChangeText={v => setEditing(e => e ? { ...e, order: parseInt(v) || 0 } : e)}
+                placeholder="Sıralama (0=en üst)" keyboardType="numeric" placeholderTextColor={theme.textMute} style={styles.input} />
+            </View>
+            <Text style={{ color: theme.textDim, fontSize: 12, marginTop: 4 }}>Erişim:</Text>
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              {(["open", "vip", "closed"] as const).map(a => (
+                <Pressable key={a} onPress={() => setEditing(e => e ? { ...e, access: a } : e)}
+                  style={[styles.miniBtn, { flex: 1, paddingVertical: 10 },
+                    editing?.access === a && { backgroundColor: ACCESS_LABELS[a].color + "33", borderColor: ACCESS_LABELS[a].color }]}>
+                  <Text style={[styles.miniBtnText, editing?.access === a && { color: ACCESS_LABELS[a].color }]}>
+                    {ACCESS_LABELS[a].label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 8 }}>
+              <Pressable onPress={() => setEditing(null)} style={[styles.secondaryBtn, { flex: 1 }]}><Text style={styles.secondaryText}>İptal</Text></Pressable>
+              <Pressable onPress={saveEdit} style={[styles.primaryBtn, { flex: 1 }]}><Text style={styles.primaryText}>Kaydet</Text></Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+    </ScrollView>
+  );
+}
+
+// ---------- PACKAGES (VIP Paketleri) ----------
+function PackagesTab({ onToast }: { onToast: (m: string) => void }) {
+  const [packages, setPackages] = useState<VipPackage[]>([]);
+  const [cats, setCats] = useState<CategoryConfig[]>([]);
+  const [editing, setEditing] = useState<VipPackage | null>(null);
+  const [form, setForm] = useState<Omit<VipPackage, "id" | "created_at">>({
+    name: "", description: "", categories: [], channel_ids: [], active: true,
+  });
+
+  const load = async () => {
+    try {
+      const [pkgs, catList] = await Promise.all([api.adminVipPackages(), api.adminCategoryConfigs()]);
+      setPackages(pkgs);
+      setCats(catList);
+    } catch {}
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const openNew = () => {
+    setEditing({ id: "", name: "", categories: [], channel_ids: [], active: true, created_at: "" });
+    setForm({ name: "", description: "", categories: [], channel_ids: [], active: true });
+  };
+
+  const openEdit = (p: VipPackage) => {
+    setEditing(p);
+    setForm({ name: p.name, description: p.description || "", categories: [...p.categories], channel_ids: [...p.channel_ids], active: p.active });
+  };
+
+  const save = async () => {
+    try {
+      if (editing?.id) await api.adminUpdateVipPackage(editing.id, form);
+      else await api.adminCreateVipPackage(form);
+      onToast("Kaydedildi"); setEditing(null); load();
+    } catch (e: any) { onToast(e.message); }
+  };
+
+  const toggleCat = (name: string) => {
+    setForm(f => ({
+      ...f,
+      categories: f.categories.includes(name) ? f.categories.filter(c => c !== name) : [...f.categories, name],
+    }));
+  };
+
+  return (
+    <ScrollView contentContainerStyle={styles.content}>
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+        <Text style={styles.sectionTitle}>VIP Paketleri</Text>
+        <Pressable onPress={openNew} style={styles.smallBtn}><Ionicons name="add" size={16} color="#fff" /></Pressable>
+      </View>
+      <Text style={{ color: theme.textDim, fontSize: 12, marginBottom: 8 }}>
+        Her paket, kategorilerin bir koleksiyonudur. VIP kullanıcılara veya tek tek kişilere atanabilir.
+      </Text>
+
+      {packages.length === 0 ? (
+        <View style={styles.empty}>
+          <Ionicons name="gift-outline" size={48} color={theme.textMute} />
+          <Text style={styles.emptyText}>Henüz paket yok</Text>
+        </View>
+      ) : packages.map(p => (
+        <Pressable key={p.id} onPress={() => openEdit(p)} style={styles.itemRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.itemName}>{p.name}{p.active ? "" : " · pasif"}</Text>
+            <Text style={styles.itemMeta}>{p.categories.length} kategori · {p.channel_ids.length} özel kanal</Text>
+            {p.description ? <Text style={styles.itemMeta}>{p.description}</Text> : null}
+          </View>
+          <Pressable onPress={() => api.adminDeleteVipPackage(p.id).then(() => { onToast("Silindi"); load(); }).catch(e => onToast(e.message))} style={styles.iconBtn} hitSlop={6}>
+            <Ionicons name="trash-outline" size={20} color={theme.danger} />
+          </Pressable>
+        </Pressable>
+      ))}
+
+      <Modal visible={!!editing} transparent animationType="slide" onRequestClose={() => setEditing(null)}>
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalRoot}>
+          <Pressable style={styles.modalBack} onPress={() => setEditing(null)} />
+          <ScrollView style={[styles.modalCard, { maxHeight: "90%" }]} contentContainerStyle={{ gap: 10, paddingBottom: 20 }}>
+            <Text style={styles.modalTitle}>{editing?.id ? "Paketi Düzenle" : "Yeni Paket"}</Text>
+            <View style={styles.inputWrap}>
+              <TextInput value={form.name} onChangeText={v => setForm({ ...form, name: v })} placeholder="Paket adı" placeholderTextColor={theme.textMute} style={styles.input} />
+            </View>
+            <View style={styles.inputWrap}>
+              <TextInput value={form.description || ""} onChangeText={v => setForm({ ...form, description: v })} placeholder="Açıklama (opsiyonel)" placeholderTextColor={theme.textMute} style={styles.input} />
+            </View>
+            <View style={styles.switchRow}>
+              <Text style={styles.switchLbl}>Aktif</Text>
+              <Switch value={form.active} onValueChange={v => setForm({ ...form, active: v })} thumbColor={form.active ? theme.accent : "#888"} />
+            </View>
+            <Text style={{ color: theme.textDim, fontSize: 13, fontWeight: "700" }}>Kategoriler (seç/kaldır):</Text>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+              {cats.filter(c => c.access !== "closed").map(c => {
+                const sel = form.categories.includes(c.name);
+                return (
+                  <Pressable key={c.name} onPress={() => toggleCat(c.name)}
+                    style={[styles.tinyChip, sel && { backgroundColor: theme.accent + "33", borderColor: theme.accent }]}>
+                    <Text style={[styles.tinyChipText, sel && { color: theme.accent }]}>{c.display_name}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <Pressable onPress={() => setEditing(null)} style={[styles.secondaryBtn, { flex: 1 }]}><Text style={styles.secondaryText}>İptal</Text></Pressable>
+              <Pressable onPress={save} style={[styles.primaryBtn, { flex: 1 }]}><Text style={styles.primaryText}>Kaydet</Text></Pressable>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </Modal>
     </ScrollView>
   );
 }
@@ -303,8 +617,58 @@ function UsersTab({ onToast }: { onToast: (m: string) => void }) {
   const [users, setUsers] = useState<User[]>([]);
   const [vipModal, setVipModal] = useState<User | null>(null);
   const [days, setDays] = useState("30");
+  const [grantModal, setGrantModal] = useState<User | null>(null);
+  const [grant, setGrant] = useState<UserGrant | null>(null);
+  const [packages, setPackages] = useState<VipPackage[]>([]);
+  const [cats, setCats] = useState<CategoryConfig[]>([]);
+  const [superfavName, setSuperfavName] = useState("");
+
   const load = () => api.adminUsers().then(setUsers).catch(() => {});
   useEffect(() => { load(); }, []);
+
+  const openGrant = async (u: User) => {
+    setGrantModal(u);
+    try {
+      const [g, pkgs, catList] = await Promise.all([
+        api.adminGetUserGrant(u.id),
+        api.adminVipPackages(),
+        api.adminCategoryConfigs(),
+      ]);
+      setGrant(g);
+      setPackages(pkgs.filter(p => p.active));
+      setCats(catList.filter(c => c.access !== "closed"));
+      setSuperfavName(g.superfav_name || "");
+    } catch {}
+  };
+
+  const saveGrant = async () => {
+    if (!grantModal || !grant) return;
+    try {
+      await api.adminSetUserGrant(grantModal.id, {
+        ...grant,
+        superfav_name: superfavName.trim() || undefined,
+      });
+      onToast("Erişim hakları kaydedildi");
+      setGrantModal(null);
+    } catch (e: any) { onToast(e.message); }
+  };
+
+  const toggleGrantPackage = (id: string) => {
+    setGrant(g => g ? {
+      ...g,
+      package_ids: g.package_ids.includes(id) ? g.package_ids.filter(p => p !== id) : [...g.package_ids, id],
+    } : g);
+  };
+
+  const toggleGrantCat = (name: string) => {
+    setGrant(g => g ? {
+      ...g,
+      extra_categories: g.extra_categories.includes(name)
+        ? g.extra_categories.filter(c => c !== name)
+        : [...g.extra_categories, name],
+    } : g);
+  };
+
   const setResultUser = async (u: User, field: "adult_allowed" | "sports_allowed", val: boolean) => {
     try {
       if (field === "adult_allowed") await api.adminSetAdult(u.id, val);
@@ -356,6 +720,11 @@ function UsersTab({ onToast }: { onToast: (m: string) => void }) {
               <Pressable onPress={() => api.adminRevokeVip(u.id).then(() => { onToast("VIP kaldırıldı"); load(); }).catch(e => onToast(e.message))} style={styles.miniBtn}>
                 <Ionicons name="close" size={11} color={theme.text} />
               </Pressable>
+              {/* Kategori/Paket Ata */}
+              <Pressable onPress={() => openGrant(u)} style={[styles.miniBtn, { backgroundColor: "#3B82F622", borderColor: "#3B82F6" }]}>
+                <Ionicons name="layers" size={11} color="#3B82F6" />
+                <Text style={[styles.miniBtnText, { color: "#3B82F6" }]}>Paket</Text>
+              </Pressable>
               <Pressable onPress={() => toggleBlock(u)} style={[styles.miniBtn, u.blocked && { backgroundColor: theme.danger + "33", borderColor: theme.danger }]}>
                 <Ionicons name="ban" size={11} color={u.blocked ? theme.danger : theme.text} />
               </Pressable>
@@ -366,6 +735,8 @@ function UsersTab({ onToast }: { onToast: (m: string) => void }) {
           </View>
         </View>
       ))}
+
+      {/* VIP Gün Modalı */}
       <Modal visible={!!vipModal} transparent animationType="slide" onRequestClose={() => setVipModal(null)}>
         <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalRoot}>
           <Pressable style={styles.modalBack} onPress={() => setVipModal(null)} />
@@ -381,6 +752,71 @@ function UsersTab({ onToast }: { onToast: (m: string) => void }) {
               <Pressable onPress={grantVip} style={[styles.primaryBtn, { flex: 1 }]}><Text style={styles.primaryText}>Onayla</Text></Pressable>
             </View>
           </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Kategori/Paket Atama Modalı */}
+      <Modal visible={!!grantModal} transparent animationType="slide" onRequestClose={() => setGrantModal(null)}>
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalRoot}>
+          <Pressable style={styles.modalBack} onPress={() => setGrantModal(null)} />
+          <ScrollView style={[styles.modalCard, { maxHeight: "92%" }]} contentContainerStyle={{ gap: 10, paddingBottom: 24 }}>
+            <Text style={styles.modalTitle}>📦 Paket & Kategori Ata</Text>
+            <Text style={styles.modalSub}>{grantModal?.username} — özel erişim hakları</Text>
+
+            <Text style={{ color: theme.textDim, fontSize: 13, fontWeight: "700" }}>VIP Paketleri:</Text>
+            {packages.length === 0
+              ? <Text style={{ color: theme.textMute, fontSize: 12 }}>Önce Paketler sekmesinden paket oluşturun.</Text>
+              : packages.map(p => {
+                const sel = grant?.package_ids.includes(p.id);
+                return (
+                  <Pressable key={p.id} onPress={() => toggleGrantPackage(p.id)}
+                    style={[styles.chRow, sel && { borderColor: theme.gold }]}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.chName, sel && { color: theme.gold }]}>{p.name}</Text>
+                      <Text style={styles.chCat}>{p.categories.join(", ") || "Kategori yok"}</Text>
+                    </View>
+                    {sel && <Ionicons name="checkmark-circle" size={20} color={theme.gold} />}
+                  </Pressable>
+                );
+              })
+            }
+
+            <Text style={{ color: theme.textDim, fontSize: 13, fontWeight: "700", marginTop: 4 }}>Tek Tek Ekstra Kategoriler:</Text>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+              {cats.map(c => {
+                const sel = grant?.extra_categories.includes(c.name);
+                return (
+                  <Pressable key={c.name} onPress={() => toggleGrantCat(c.name)}
+                    style={[styles.tinyChip, sel && { backgroundColor: "#3B82F622", borderColor: "#3B82F6" }]}>
+                    <Text style={[styles.tinyChipText, sel && { color: "#3B82F6" }]}>{c.display_name}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <Text style={{ color: theme.textDim, fontSize: 13, fontWeight: "700", marginTop: 4 }}>Süper Favori Koleksiyonu:</Text>
+            <Text style={{ color: theme.textMute, fontSize: 11 }}>
+              Bu kullanıcıya özel kategori oluşturur. Kanal ID'lerini virgülle girin.
+            </Text>
+            <View style={styles.inputWrap}>
+              <TextInput value={superfavName} onChangeText={setSuperfavName} placeholder="Koleksiyon adı (örn: Özel Paket)" placeholderTextColor={theme.textMute} style={styles.input} />
+            </View>
+            <View style={[styles.inputWrap, { minHeight: 70 }]}>
+              <TextInput
+                value={grant?.superfav_channel_ids.join("\n") || ""}
+                onChangeText={v => setGrant(g => g ? { ...g, superfav_channel_ids: v.split(/[\n,]+/).map(s => s.trim()).filter(Boolean) } : g)}
+                placeholder={"Kanal ID'leri (her satıra bir tane)"}
+                placeholderTextColor={theme.textMute}
+                style={[styles.input, { paddingTop: 8 }]}
+                multiline
+              />
+            </View>
+
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <Pressable onPress={() => setGrantModal(null)} style={[styles.secondaryBtn, { flex: 1 }]}><Text style={styles.secondaryText}>İptal</Text></Pressable>
+              <Pressable onPress={saveGrant} style={[styles.primaryBtn, { flex: 1 }]}><Text style={styles.primaryText}>Kaydet</Text></Pressable>
+            </View>
+          </ScrollView>
         </KeyboardAvoidingView>
       </Modal>
     </ScrollView>
