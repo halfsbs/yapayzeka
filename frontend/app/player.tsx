@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import {
   View,
   Text,
@@ -12,9 +12,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api";
 
 // ============================================================
-// HANGİ PLAYER PAKETİNİ KULLANMAK İSTİYORSUN?
-// true  = expo-video (modern, PIP destekli, QR kodda çalışır)
-// false = expo-av    (klasik, Expo Go'da garanti çalışır)
+// MODERN OYNATICI AKTİF (Kilitlenme ve donma hataları giderildi)
 // ============================================================
 const USE_EXPO_VIDEO = true;
 
@@ -172,10 +170,12 @@ function ExpoVideoPlayer({
   const useVideoPlayer = expoVideoPkg.useVideoPlayer;
   const VideoView = expoVideoPkg.VideoView;
 
-  // DÜZELTİLDİ: Oynatıcının m3u8 playlist listesini hafızaya alıp yayını dondurmasını engelliyoruz
-  const finalLiveUrl = url.includes("?") 
-    ? `${url}&_cb=${Date.now()}` 
-    : `${url}?_cb=${Date.now()}`;
+  // KESİN DÜZELTİLDİ: useMemo/useRef mantığıyla link sabitlendi. 
+  // Her saniye Date.now() değişerek player'ı baştan yaratıp dondurmayacak, 
+  // sadece ilk açılışta önbellek blokajını kıracak.
+  const finalLiveUrl = useRef(
+    url.includes("?") ? `${url}&_cb=${Date.now()}` : `${url}?_cb=${Date.now()}`
+  ).current;
 
   const player = useVideoPlayer(finalLiveUrl, (playerInstance: any) => {
     playerInstance.loop = false;
@@ -280,7 +280,7 @@ function ExpoAvPlayer({
             setBuffering(status.isBuffering);
           } else {
             if (status.error) {
-              setHasError(true);
+              setHasError(true)
               if (!failedRef.current) {
                 failedRef.current = true;
                 onError("Yayın akışı yüklenemedi");
