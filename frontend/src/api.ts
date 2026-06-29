@@ -81,6 +81,47 @@ export interface Ad {
   weight: number;
 }
 
+// ---------- Kategori Erişim Sistemi ----------
+export type CategoryAccess = "open" | "vip" | "closed";
+
+export interface CategoryConfig {
+  name: string;
+  display_name: string;
+  access: CategoryAccess;
+  order: number;
+  channel_count: number;
+}
+
+export interface CategoryInfo {
+  name: string;
+  display_name: string;
+  count: number;
+  order: number;
+  is_superfav?: boolean;
+}
+
+// ---------- VIP Paket Sistemi ----------
+export interface VipPackage {
+  id: string;
+  name: string;
+  description?: string;
+  categories: string[];
+  channel_ids: string[];
+  active: boolean;
+  created_at: string;
+}
+
+// ---------- Kullanıcı Grant Sistemi ----------
+export interface UserGrant {
+  user_id: string;
+  username: string;
+  package_ids: string[];
+  extra_categories: string[];
+  extra_channel_ids: string[];
+  superfav_name?: string;
+  superfav_channel_ids: string[];
+}
+
 export interface PublicSettings {
   settings: AppSettings;
   vip_plans: VipPlan[];
@@ -198,7 +239,7 @@ export const api = {
   logout,
   me: () => req<User>("/auth/me"),
   settings: () => req<PublicSettings>("/settings"),
-  categories: () => req<{ name: string; count: number }[]>("/categories"),
+  categories: () => req<CategoryInfo[]>("/categories"),
   channels: (category?: string, q?: string) => {
     const p = new URLSearchParams();
     if (category) p.append("category", category);
@@ -251,6 +292,35 @@ export const api = {
   adminAddAd: (a: Omit<Ad, "id">) => req<Ad>("/admin/ads", { method: "POST", body: JSON.stringify(a) }),
   adminUpdateAd: (id: string, a: Omit<Ad, "id">) => req<Ad>(`/admin/ads/${id}`, { method: "PATCH", body: JSON.stringify(a) }),
   adminDelAd: (id: string) => req(`/admin/ads/${id}`, { method: "DELETE" }),
+
+  // ---------- Kategori Erişim Yönetimi ----------
+  adminCategoryConfigs: () => req<CategoryConfig[]>("/admin/category-configs"),
+  adminUpdateCategoryConfig: (name: string, body: Partial<Omit<CategoryConfig, "name" | "channel_count">>) =>
+    req(`/admin/category-configs/${encodeURIComponent(name)}`, { method: "PATCH", body: JSON.stringify(body) }),
+  adminBulkUpdateCategoryConfigs: (items: Partial<CategoryConfig>[]) =>
+    req("/admin/category-configs/bulk", { method: "POST", body: JSON.stringify(items) }),
+  adminMergeCategories: (sources: string[], target: string) =>
+    req("/admin/categories/merge", { method: "POST", body: JSON.stringify({ sources, target }) }),
+
+  // ---------- VIP Paket Yönetimi ----------
+  adminVipPackages: () => req<VipPackage[]>("/admin/vip-packages"),
+  adminCreateVipPackage: (p: Omit<VipPackage, "id" | "created_at">) =>
+    req<VipPackage>("/admin/vip-packages", { method: "POST", body: JSON.stringify(p) }),
+  adminUpdateVipPackage: (id: string, p: Omit<VipPackage, "id" | "created_at">) =>
+    req<VipPackage>(`/admin/vip-packages/${id}`, { method: "PATCH", body: JSON.stringify(p) }),
+  adminDeleteVipPackage: (id: string) => req(`/admin/vip-packages/${id}`, { method: "DELETE" }),
+
+  // ---------- Kullanıcı Grant Yönetimi ----------
+  adminUserGrants: () => req<UserGrant[]>("/admin/user-grants"),
+  adminGetUserGrant: (userId: string) => req<UserGrant>(`/admin/user-grants/${userId}`),
+  adminSetUserGrant: (userId: string, g: Partial<Omit<UserGrant, "user_id" | "username">>) =>
+    req<UserGrant>(`/admin/user-grants/${userId}`, { method: "PUT", body: JSON.stringify(g) }),
+  adminDeleteUserGrant: (userId: string) => req(`/admin/user-grants/${userId}`, { method: "DELETE" }),
+
+  // ---------- Varsayılan Kaynak (Normal Kullanıcı) ----------
+  adminGetDefaultSource: () => req<{ url?: string; name?: string }>("/admin/default-source"),
+  adminSetDefaultSource: (url: string, name: string) =>
+    req("/admin/default-source", { method: "PUT", body: JSON.stringify({ url, name }) }),
 };
 
 export const theme = {
