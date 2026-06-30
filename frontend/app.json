@@ -14,6 +14,7 @@
     },
     "android": {
       "package": "com.yapayzeka.iptv",
+      "minSdkVersion": 26,
       "usesCleartextTraffic": true,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
@@ -68,7 +69,8 @@
       ],
       "expo-secure-store",
       "expo-video",
-      "./plugins/withVlcPlayer.js"
+      "./plugins/withVlcPlayer.js",
+      "expo-build-properties"
     ],
     "experiments": {
       "typedRoutes": true
