@@ -14,12 +14,12 @@ import { api } from "@/src/api";
 let expoVideoPkg: any = null;
 try {
   expoVideoPkg = require("expo-video");
-} catch (e) { /* expo-video kurulu degil */ }
+} catch (e) {}
 
 let vlcPlayerPkg: any = null;
 try {
   vlcPlayerPkg = require("react-native-vlc-media-player");
-} catch (e) { /* react-native-vlc-media-player kurulu degil */ }
+} catch (e) {}
 
 type PlayerMode = "expo-video" | "vlc";
 
@@ -31,6 +31,11 @@ export default function Player() {
   const [activeIdx, setActiveIdx] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [fav, setFav] = useState(false);
+  
+  // Oynatıcı seçimini tamamen kullanıcıya bırakan state kanka
+  const [selectedMode, setSelectedMode] = useState<PlayerMode>(
+    expoVideoPkg ? "expo-video" : "vlc"
+  );
 
   useEffect(() => {
     let isMounted = true;
@@ -83,6 +88,7 @@ export default function Player() {
     <View style={styles.root}>
       <StatusBar barStyle="light-content" hidden={true} />
 
+      {/* Üst Bar */}
       <View style={styles.head}>
         <Pressable onPress={() => router.back()}>
           <Ionicons name="chevron-back" size={28} color="#fff" />
@@ -99,6 +105,7 @@ export default function Player() {
         </Pressable>
       </View>
 
+      {/* Video Alanı */}
       <View style={styles.videoBox}>
         {error ? (
           <View style={styles.center}>
@@ -112,19 +119,45 @@ export default function Player() {
           </View>
         ) : (
           <PlayerInner
-            key={`${id}-${activeIdx}`}
+            key={`${id}-${activeIdx}-${selectedMode}`}
             url={urls[activeIdx]}
-            urls={urls}
-            activeIdx={activeIdx}
+            mode={selectedMode}
             onTryNext={tryNext}
-            onSetError={setError}
           />
         )}
       </View>
 
+      {/* Alt Kontrol ve Bilgi Paneli */}
       <View style={styles.infoBox}>
         <Text style={styles.infoTitle}>{name}</Text>
         <Text style={styles.infoSub}>Canli Yayin</Text>
+
+        {/* Oynatıcı Seçim Seçenekleri (İstediğin Modu Elinle Seç kanka) */}
+        <Text style={styles.sectionTitle}>Oynatici Motoru Seç:</Text>
+        <View style={styles.modeSelector}>
+          {expoVideoPkg && (
+            <Pressable
+              onPress={() => setSelectedMode("expo-video")}
+              style={[styles.modeBtn, selectedMode === "expo-video" && styles.modeBtnActive]}
+            >
+              <Ionicons name="flash" size={16} color={selectedMode === "expo-video" ? "#000" : "#fff"} />
+              <Text style={[styles.modeBtnText, selectedMode === "expo-video" && styles.modeBtnTextActive]}>
+                Expo Video (Modern)
+              </Text>
+            </Pressable>
+          )}
+          {vlcPlayerPkg && (
+            <Pressable
+              onPress={() => setSelectedMode("vlc")}
+              style={[styles.modeBtn, selectedMode === "vlc" && styles.modeBtnActive]}
+            >
+              <Ionicons name="logo-playstation" size={16} color={selectedMode === "vlc" ? "#000" : "#fff"} />
+              <Text style={[styles.modeBtnText, selectedMode === "vlc" && styles.modeBtnTextActive]}>
+                VLC Player (Güçlü Motor)
+              </Text>
+            </Pressable>
+          )}
+        </View>
 
         {urls && urls.length > 1 && (
           <Pressable onPress={tryNext} style={styles.altBtn}>
@@ -141,39 +174,18 @@ export default function Player() {
 
 function PlayerInner({
   url,
-  urls,
-  activeIdx,
+  mode,
   onTryNext,
-  onSetError,
 }: {
   url: string;
-  urls: string[];
-  activeIdx: number;
+  mode: PlayerMode;
   onTryNext: () => void;
-  onSetError: (msg: string) => void;
 }) {
-  const [mode, setMode] = useState<PlayerMode>(
-    expoVideoPkg ? "expo-video" : "vlc"
-  );
-
   const handleError = useCallback(
     (msg: string, currentMode: PlayerMode) => {
       console.log(`[Player] Hata (${currentMode}): ${msg}`);
-
-      // Eğer zaten VLC modundaysak ve hata kesinleştiyse sonraki yedeğe geç
-      if (currentMode === "vlc") {
-        console.log("[Player] VLC kesin olarak oynatamadi, sonraki yedek URL...");
-        onTryNext();
-        return;
-      }
-
-      // Eğer ilk hata expo-video'dan geldiyse, VLC kurtarıcı moduna geçiş yap
-      if (currentMode === "expo-video" && vlcPlayerPkg) {
-        console.log("[Player] expo-video hatasi, VLC'ye geciliyor...");
-        setMode("vlc");
-      } else {
-        onTryNext();
-      }
+      // Artık otomatik mod geçişi yok, hata verirse direkt sonraki yedek URL'yi dener kanka
+      onTryNext();
     },
     [onTryNext]
   );
@@ -199,7 +211,7 @@ function PlayerInner({
   return (
     <View style={styles.center}>
       <Ionicons name="warning-outline" size={50} color="orange" />
-      <Text style={styles.err}>Oynatici yuklenemedi.</Text>
+      <Text style={styles.err}>Oynatici kullanilabilir degil.</Text>
     </View>
   );
 }
@@ -215,7 +227,6 @@ function ExpoVideoPlayer({
   const [hasError, setHasError] = useState(false);
   const isFailedTriggered = useRef(false);
   const readyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isSuccessfullyPlaying = useRef(false);
 
   const useVideoPlayer = expoVideoPkg.useVideoPlayer;
   const VideoView = expoVideoPkg.VideoView;
@@ -234,7 +245,6 @@ function ExpoVideoPlayer({
     setReady(false);
     setHasError(false);
     isFailedTriggered.current = false;
-    isSuccessfullyPlaying.current = false;
 
     if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
 
@@ -244,7 +254,6 @@ function ExpoVideoPlayer({
 
       if (currentStatus === "readyToPlay") {
         setReady(true);
-        isSuccessfullyPlaying.current = true;
         if (readyTimerRef.current) {
           clearTimeout(readyTimerRef.current);
           readyTimerRef.current = null;
@@ -252,7 +261,6 @@ function ExpoVideoPlayer({
       }
 
       if (currentStatus === "error" || currentError) {
-        if (isSuccessfullyPlaying.current) return;
         setHasError(true);
         if (!isFailedTriggered.current) {
           isFailedTriggered.current = true;
@@ -266,7 +274,7 @@ function ExpoVideoPlayer({
         isFailedTriggered.current = true;
         onError("Expo timeout");
       }
-    }, 6000);
+    }, 8000);
 
     return () => {
       if (subscription && typeof subscription.remove === "function") subscription.remove();
@@ -276,7 +284,13 @@ function ExpoVideoPlayer({
 
   return (
     <View style={{ flex: 1, backgroundColor: "#000" }}>
-      <VideoView style={{ flex: 1 }} player={player} contentFit="contain" />
+      <VideoView 
+        style={{ flex: 1 }} 
+        player={player} 
+        contentFit="contain" 
+        nativeControls={true} // Expo butonları aktif kanka
+        allowsFullscreen={true}
+      />
       {!ready && !hasError && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator color="#fff" size="large" />
@@ -295,56 +309,29 @@ function VlcPlayer({
 }) {
   const [ready, setReady] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const [paused, setPaused] = useState(false); // VLC Play/Pause kontrolü için
   const isFailedTriggered = useRef(false);
   const readyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const errorIgnoreTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const nativeErrorDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const isSuccessfullyPlaying = useRef(false);
   const VLCPlayer = vlcPlayerPkg.VLCPlayer;
-
-  const handleError = useCallback(
-    (e: any) => {
-      if (nativeErrorDelayRef.current) clearTimeout(nativeErrorDelayRef.current);
-      
-      nativeErrorDelayRef.current = setTimeout(() => {
-        if (isSuccessfullyPlaying.current) {
-          console.log("[VLC] Video zaten oynatiliyor, hata pas gecildi.");
-          return;
-        }
-
-        setHasError(true);
-        if (!isFailedTriggered.current) {
-          isFailedTriggered.current = true;
-          const msg = e?.error?.message || e?.error || "VLC hatası";
-          onError(String(msg));
-        }
-      }, 600);
-    },
-    [onError]
-  );
 
   useEffect(() => {
     setReady(false);
     setHasError(false);
+    setPaused(false);
     isFailedTriggered.current = false;
-    isSuccessfullyPlaying.current = false;
 
     if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
-    if (errorIgnoreTimeoutRef.current) clearTimeout(errorIgnoreTimeoutRef.current);
-    if (nativeErrorDelayRef.current) clearTimeout(nativeErrorDelayRef.current);
 
     readyTimerRef.current = setTimeout(() => {
-      if (!ready && !hasError && !isFailedTriggered.current && !isSuccessfullyPlaying.current) {
+      if (!ready && !hasError && !isFailedTriggered.current) {
         isFailedTriggered.current = true;
         onError("VLC timeout");
       }
-    }, 12000);
+    }, 15000);
 
     return () => {
       if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
-      if (errorIgnoreTimeoutRef.current) clearTimeout(errorIgnoreTimeoutRef.current);
-      if (nativeErrorDelayRef.current) clearTimeout(nativeErrorDelayRef.current);
     };
   }, [url, onError]);
 
@@ -355,42 +342,46 @@ function VlcPlayer({
           uri: url,
           initType: 1,
           initOptions: [
-            "--network-caching=2500",
-            "--live-caching=2500",
-            "--file-caching=2500",
+            "--network-caching=5000", // 4K yayınlar durmasın diye cache süresini 5 saniyeye çıkardım kanka!
+            "--live-caching=5000",
+            "--file-caching=5000",
             "--codec=avcodec,all",
           ],
         }}
         autoplay={true}
+        paused={paused}
         autoAspectRatio={true}
         videoAspectRatio="16:9"
         resizeMode="contain"
         style={{ flex: 1 }}
-        onError={handleError}
-        onBuffering={(e: any) => {
-          if (e?.isBuffering === 0) {
-            setReady(true);
-            isSuccessfullyPlaying.current = true;
+        onError={(e: any) => {
+          // Eğer video çoktan oynamaya başladıysa anlık dalgalanmaları ve durmaları yoksay, kanalı kapatma!
+          if (ready) return; 
+          setHasError(true);
+          if (!isFailedTriggered.current) {
+            isFailedTriggered.current = true;
+            onError(String(e?.error || "VLC hatası"));
           }
         }}
-        onPlaying={() => {
-          setReady(true);
-          isSuccessfullyPlaying.current = true;
+        onBuffering={(e: any) => {
+          if (e?.isBuffering === 0) setReady(true);
         }}
-        onStopped={() => {
-          if (errorIgnoreTimeoutRef.current) clearTimeout(errorIgnoreTimeoutRef.current);
-          errorIgnoreTimeoutRef.current = setTimeout(() => {
-            if (!ready) {
-              setReady(false);
-              isSuccessfullyPlaying.current = false;
-            }
-          }, 2000);
-        }}
+        onPlaying={() => setReady(true)}
       />
+
+      {/* VLC İçin Ekrana Özel Kontrol Butonları Eklendi (Play/Pause) */}
+      {ready && (
+        <View style={styles.vlcControls}>
+          <Pressable onPress={() => setPaused(!paused)} style={styles.controlBtn}>
+            <Ionicons name={paused ? "play" : "pause"} size={24} color="#fff" />
+          </Pressable>
+        </View>
+      )}
+
       {!ready && !hasError && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator color="#fff" size="large" />
-          <Text style={{ color: "#aaa", marginTop: 8 }}>VLC yukleniyor...</Text>
+          <Text style={{ color: "#aaa", marginTop: 8 }}>VLC Motoru Yukleniyor...</Text>
         </View>
       )}
     </View>
@@ -398,13 +389,14 @@ function VlcPlayer({
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#000" },
+  root: { flex: 1, backgroundColor: "#111" },
   head: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     padding: 16,
     paddingTop: 50,
+    backgroundColor: "#1a1a1a"
   },
   title: {
     flex: 1,
@@ -414,7 +406,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginHorizontal: 12,
   },
-  videoBox: { width: "100%", aspectRatio: 16 / 9, backgroundColor: "#000" },
+  videoBox: { width: "100%", aspectRatio: 16 / 9, backgroundColor: "#000", position: 'relative' },
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10 },
   err: { color: "red", textAlign: "center", paddingHorizontal: 20 },
   loading: { color: "#aaa" },
@@ -422,20 +414,55 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.6)",
+    backgroundColor: "rgba(0,0,0,0.7)",
   },
   infoBox: { padding: 20 },
   infoTitle: { color: "#fff", fontSize: 20, fontWeight: "700" },
   infoSub: { color: "#aaa", marginTop: 4 },
+  sectionTitle: { color: "#fff", fontSize: 14, fontWeight: "600", marginTop: 20, marginBottom: 10 },
+  modeSelector: { flexDirection: "row", gap: 10, marginBottom: 15 },
+  modeBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    padding: 12,
+    backgroundColor: "#2a2a2a",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#444"
+  },
+  modeBtnActive: { backgroundColor: "#fff", borderColor: "#fff" },
+  modeBtnText: { color: "#fff", fontSize: 13, fontWeight: "600" },
+  modeBtnTextActive: { color: "#000" },
   altBtn: {
     flexDirection: "row",
     marginTop: 10,
-    padding: 10,
-    backgroundColor: "#222",
+    padding: 12,
+    backgroundColor: "#ff9f43",
     borderRadius: 8,
     gap: 6,
     alignItems: "center",
-    alignSelf: "flex-start",
+    justifyContent: "center"
   },
-  altText: { color: "#fff" },
+  altText: { color: "#000", fontWeight: "700" },
+  vlcControls: {
+    position: "absolute",
+    bottom: 10,
+    left: 10,
+    right: 10,
+    flexDirection: "row",
+    justifyContent: "flex-start",
+    alignItems: "center",
+  },
+  controlBtn: {
+    backgroundColor: "rgba(0,0,0,0.6)",
+    padding: 8,
+    borderRadius: 20,
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center"
+  }
 });
