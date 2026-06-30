@@ -6,20 +6,17 @@ import {
   Pressable,
   ActivityIndicator,
   StatusBar,
+  Dimensions,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api";
 
 let expoVideoPkg: any = null;
-try {
-  expoVideoPkg = require("expo-video");
-} catch (e) {}
+try { expoVideoPkg = require("expo-video"); } catch (e) {}
 
 let vlcPlayerPkg: any = null;
-try {
-  vlcPlayerPkg = require("react-native-vlc-media-player");
-} catch (e) {}
+try { vlcPlayerPkg = require("react-native-vlc-media-player"); } catch (e) {}
 
 type PlayerMode = "expo-video" | "vlc";
 
@@ -31,8 +28,9 @@ export default function Player() {
   const [activeIdx, setActiveIdx] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [fav, setFav] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   
-  // Oynatıcı seçimini tamamen kullanıcıya bırakan state kanka
+  // Alt kısımda elinle seçeceğin oynatıcı modu
   const [selectedMode, setSelectedMode] = useState<PlayerMode>(
     expoVideoPkg ? "expo-video" : "vlc"
   );
@@ -56,21 +54,13 @@ export default function Player() {
         }
       }
     })();
-
-    return () => {
-      isMounted = false;
-    };
+    return () => { isMounted = false; };
   }, [id]);
 
   const toggleFav = async () => {
     try {
-      if (fav) {
-        await api.delFav(id);
-        setFav(false);
-      } else {
-        await api.addFav(id);
-        setFav(true);
-      }
+      if (fav) { await api.delFav(id); setFav(false); }
+      else { await api.addFav(id); setFav(true); }
     } catch {}
   };
 
@@ -88,25 +78,27 @@ export default function Player() {
     <View style={styles.root}>
       <StatusBar barStyle="light-content" hidden={true} />
 
-      {/* Üst Bar */}
-      <View style={styles.head}>
-        <Pressable onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={28} color="#fff" />
-        </Pressable>
-        <Text style={styles.title} numberOfLines={1}>
-          {name || "Kanal"}
-        </Text>
-        <Pressable onPress={toggleFav}>
-          <Ionicons
-            name={fav ? "heart" : "heart-outline"}
-            size={26}
-            color={fav ? "#ff4d4d" : "#fff"}
-          />
-        </Pressable>
-      </View>
+      {/* Tam ekrandayken üst barı gizle kanka */}
+      {!isFullscreen && (
+        <View style={styles.head}>
+          <Pressable onPress={() => router.back()}>
+            <Ionicons name="chevron-back" size={28} color="#fff" />
+          </Pressable>
+          <Text style={styles.title} numberOfLines={1}>
+            {name || "Kanal"}
+          </Text>
+          <Pressable onPress={toggleFav}>
+            <Ionicons
+              name={fav ? "heart" : "heart-outline"}
+              size={26}
+              color={fav ? "#ff4d4d" : "#fff"}
+            />
+          </Pressable>
+        </View>
+      )}
 
-      {/* Video Alanı */}
-      <View style={styles.videoBox}>
+      {/* Video Alanı (Tam ekransa tüm ekranı kaplar) */}
+      <View style={[styles.videoBox, isFullscreen && styles.videoBoxFullscreen]}>
         {error ? (
           <View style={styles.center}>
             <Ionicons name="alert-circle-outline" size={50} color="red" />
@@ -123,51 +115,55 @@ export default function Player() {
             url={urls[activeIdx]}
             mode={selectedMode}
             onTryNext={tryNext}
+            isFullscreen={isFullscreen}
+            setIsFullscreen={setIsFullscreen}
           />
         )}
       </View>
 
-      {/* Alt Kontrol ve Bilgi Paneli */}
-      <View style={styles.infoBox}>
-        <Text style={styles.infoTitle}>{name}</Text>
-        <Text style={styles.infoSub}>Canli Yayin</Text>
+      {/* Alt Kontrol ve Seçenek Paneli (Tam ekrandayken gizlenir) */}
+      {!isFullscreen && (
+        <View style={styles.infoBox}>
+          <Text style={styles.infoTitle}>{name}</Text>
+          <Text style={styles.infoSub}>Canli Yayin</Text>
 
-        {/* Oynatıcı Seçim Seçenekleri (İstediğin Modu Elinle Seç kanka) */}
-        <Text style={styles.sectionTitle}>Oynatici Motoru Seç:</Text>
-        <View style={styles.modeSelector}>
-          {expoVideoPkg && (
-            <Pressable
-              onPress={() => setSelectedMode("expo-video")}
-              style={[styles.modeBtn, selectedMode === "expo-video" && styles.modeBtnActive]}
-            >
-              <Ionicons name="flash" size={16} color={selectedMode === "expo-video" ? "#000" : "#fff"} />
-              <Text style={[styles.modeBtnText, selectedMode === "expo-video" && styles.modeBtnTextActive]}>
-                Expo Video (Modern)
-              </Text>
-            </Pressable>
-          )}
-          {vlcPlayerPkg && (
-            <Pressable
-              onPress={() => setSelectedMode("vlc")}
-              style={[styles.modeBtn, selectedMode === "vlc" && styles.modeBtnActive]}
-            >
-              <Ionicons name="logo-playstation" size={16} color={selectedMode === "vlc" ? "#000" : "#fff"} />
-              <Text style={[styles.modeBtnText, selectedMode === "vlc" && styles.modeBtnTextActive]}>
-                VLC Player (Güçlü Motor)
+          {/* İstediğin o alt seçenek butonları müdür */}
+          <Text style={styles.sectionTitle}>Oynatici Motoru Seç:</Text>
+          <View style={styles.modeSelector}>
+            {expoVideoPkg && (
+              <Pressable
+                onPress={() => setSelectedMode("expo-video")}
+                style={[styles.modeBtn, selectedMode === "expo-video" && styles.modeBtnActive]}
+              >
+                <Ionicons name="flash" size={16} color={selectedMode === "expo-video" ? "#000" : "#fff"} />
+                <Text style={[styles.modeBtnText, selectedMode === "expo-video" && styles.modeBtnTextActive]}>
+                  Expo Video
+                </Text>
+              </Pressable>
+            )}
+            {vlcPlayerPkg && (
+              <Pressable
+                onPress={() => setSelectedMode("vlc")}
+                style={[styles.modeBtn, selectedMode === "vlc" && styles.modeBtnActive]}
+              >
+                <Ionicons name="logo-playstation" size={16} color={selectedMode === "vlc" ? "#000" : "#fff"} />
+                <Text style={[styles.modeBtnText, selectedMode === "vlc" && styles.modeBtnTextActive]}>
+                  VLC Player
+                </Text>
+              </Pressable>
+            )}
+          </View>
+
+          {urls && urls.length > 1 && (
+            <Pressable onPress={tryNext} style={styles.altBtn}>
+              <Ionicons name="swap-horizontal" size={16} color="#000" />
+              <Text style={styles.altText}>
+                Yedek yayina gec ({activeIdx + 1}/{urls.length})
               </Text>
             </Pressable>
           )}
         </View>
-
-        {urls && urls.length > 1 && (
-          <Pressable onPress={tryNext} style={styles.altBtn}>
-            <Ionicons name="swap-horizontal" size={16} color="#fff" />
-            <Text style={styles.altText}>
-              Yedek yayina gec ({activeIdx + 1}/{urls.length})
-            </Text>
-          </Pressable>
-        )}
-      </View>
+      )}
     </View>
   );
 }
@@ -176,34 +172,26 @@ function PlayerInner({
   url,
   mode,
   onTryNext,
+  isFullscreen,
+  setIsFullscreen,
 }: {
   url: string;
   mode: PlayerMode;
   onTryNext: () => void;
+  isFullscreen: boolean;
+  setIsFullscreen: (v: boolean) => void;
 }) {
-  const handleError = useCallback(
-    (msg: string, currentMode: PlayerMode) => {
-      console.log(`[Player] Hata (${currentMode}): ${msg}`);
-      // Artık otomatik mod geçişi yok, hata verirse direkt sonraki yedek URL'yi dener kanka
-      onTryNext();
-    },
-    [onTryNext]
-  );
-
   if (mode === "expo-video" && expoVideoPkg) {
-    return (
-      <ExpoVideoPlayer
-        url={url}
-        onError={(msg) => handleError(msg, "expo-video")}
-      />
-    );
+    return <ExpoVideoPlayer url={url} onError={onTryNext} />;
   }
 
   if (mode === "vlc" && vlcPlayerPkg) {
     return (
       <VlcPlayer
         url={url}
-        onError={(msg) => handleError(msg, "vlc")}
+        onError={onTryNext}
+        isFullscreen={isFullscreen}
+        setIsFullscreen={setIsFullscreen}
       />
     );
   }
@@ -211,23 +199,13 @@ function PlayerInner({
   return (
     <View style={styles.center}>
       <Ionicons name="warning-outline" size={50} color="orange" />
-      <Text style={styles.err}>Oynatici kullanilabilir degil.</Text>
+      <Text style={styles.err}>Oynatici yuklenemedi.</Text>
     </View>
   );
 }
 
-function ExpoVideoPlayer({
-  url,
-  onError,
-}: {
-  url: string;
-  onError: (msg: string) => void;
-}) {
+function ExpoVideoPlayer({ url, onError }: { url: string; onError: () => void }) {
   const [ready, setReady] = useState(false);
-  const [hasError, setHasError] = useState(false);
-  const isFailedTriggered = useRef(false);
-  const readyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   const useVideoPlayer = expoVideoPkg.useVideoPlayer;
   const VideoView = expoVideoPkg.VideoView;
 
@@ -235,67 +213,22 @@ function ExpoVideoPlayer({
     return url.includes("?") ? `${url}&_cb=${Date.now()}` : `${url}?_cb=${Date.now()}`;
   }, [url]);
 
-  const player = useVideoPlayer(finalLiveUrl, (playerInstance: any) => {
-    playerInstance.loop = false;
-    playerInstance.muted = false;
-    playerInstance.play();
+  const player = useVideoPlayer(finalLiveUrl, (p: any) => {
+    p.play();
   });
 
   useEffect(() => {
-    setReady(false);
-    setHasError(false);
-    isFailedTriggered.current = false;
-
-    if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
-
-    const subscription = player.addListener("statusChange", (event: any) => {
-      const currentStatus = event?.status || player.status;
-      const currentError = event?.error || player.error;
-
-      if (currentStatus === "readyToPlay") {
-        setReady(true);
-        if (readyTimerRef.current) {
-          clearTimeout(readyTimerRef.current);
-          readyTimerRef.current = null;
-        }
-      }
-
-      if (currentStatus === "error" || currentError) {
-        setHasError(true);
-        if (!isFailedTriggered.current) {
-          isFailedTriggered.current = true;
-          onError(String(currentError?.message || "Expo hatası"));
-        }
-      }
+    const sub = player.addListener("statusChange", (event: any) => {
+      if ((event?.status || player.status) === "readyToPlay") setReady(true);
+      if ((event?.status || player.status) === "error") onError();
     });
-
-    readyTimerRef.current = setTimeout(() => {
-      if (!ready && !hasError && !isFailedTriggered.current) {
-        isFailedTriggered.current = true;
-        onError("Expo timeout");
-      }
-    }, 8000);
-
-    return () => {
-      if (subscription && typeof subscription.remove === "function") subscription.remove();
-      if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
-    };
-  }, [url, player, onError]);
+    return () => { if (sub) sub.remove(); };
+  }, [player, onError]);
 
   return (
-    <View style={{ flex: 1, backgroundColor: "#000" }}>
-      <VideoView 
-        style={{ flex: 1 }} 
-        player={player} 
-        contentFit="contain" 
-        nativeControls={true} // Expo butonları aktif kanka
-        allowsFullscreen={true}
-      />
-      {!ready && !hasError && (
-        <View style={styles.loadingOverlay}>
-          <ActivityIndicator color="#fff" size="large" />
-        </View>
-      )}
+    <View style={{ flex: 1 }}>
+      <VideoView style={{ flex: 1 }} player={player} contentFit="contain" nativeControls={true} allowsFullscreen={true} />
+      {!ready && <View style={styles.loadingOverlay}><ActivityIndicator color="#fff" size="large" /></View>}
     </View>
   );
 }
@@ -303,50 +236,41 @@ function ExpoVideoPlayer({
 function VlcPlayer({
   url,
   onError,
+  isFullscreen,
+  setIsFullscreen,
 }: {
   url: string;
-  onError: (msg: string) => void;
+  onError: () => void;
+  isFullscreen: boolean;
+  setIsFullscreen: (v: boolean) => void;
 }) {
   const [ready, setReady] = useState(false);
-  const [hasError, setHasError] = useState(false);
-  const [paused, setPaused] = useState(false); // VLC Play/Pause kontrolü için
-  const isFailedTriggered = useRef(false);
-  const readyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [paused, setPaused] = useState(false);
+  const [showControls, setShowControls] = useState(true);
+  const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const VLCPlayer = vlcPlayerPkg.VLCPlayer;
 
+  // Ekrana dokununca kontrolleri açıp 3 saniye sonra kapatan Netflix mantığı müdür
+  const triggerControls = () => {
+    setShowControls(true);
+    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    controlsTimeoutRef.current = setTimeout(() => {
+      setShowControls(false);
+    }, 3000);
+  };
+
   useEffect(() => {
-    setReady(false);
-    setHasError(false);
-    setPaused(false);
-    isFailedTriggered.current = false;
-
-    if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
-
-    readyTimerRef.current = setTimeout(() => {
-      if (!ready && !hasError && !isFailedTriggered.current) {
-        isFailedTriggered.current = true;
-        onError("VLC timeout");
-      }
-    }, 15000);
-
-    return () => {
-      if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
-    };
-  }, [url, onError]);
+    triggerControls();
+    return () => { if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current); };
+  }, []);
 
   return (
-    <View style={{ flex: 1, backgroundColor: "#000" }}>
+    <Pressable style={{ flex: 1 }} onPress={triggerControls}>
       <VLCPlayer
         source={{
           uri: url,
-          initType: 1,
-          initOptions: [
-            "--network-caching=5000", // 4K yayınlar durmasın diye cache süresini 5 saniyeye çıkardım kanka!
-            "--live-caching=5000",
-            "--file-caching=5000",
-            "--codec=avcodec,all",
-          ],
+          initOptions: ["--network-caching=5000", "--live-caching=5000", "--codec=avcodec,all"],
         }}
         autoplay={true}
         paused={paused}
@@ -354,37 +278,61 @@ function VlcPlayer({
         videoAspectRatio="16:9"
         resizeMode="contain"
         style={{ flex: 1 }}
-        onError={(e: any) => {
-          // Eğer video çoktan oynamaya başladıysa anlık dalgalanmaları ve durmaları yoksay, kanalı kapatma!
-          if (ready) return; 
-          setHasError(true);
-          if (!isFailedTriggered.current) {
-            isFailedTriggered.current = true;
-            onError(String(e?.error || "VLC hatası"));
-          }
-        }}
-        onBuffering={(e: any) => {
-          if (e?.isBuffering === 0) setReady(true);
-        }}
         onPlaying={() => setReady(true)}
+        onBuffering={(e: any) => { if (e?.isBuffering === 0) setReady(true); }}
+        onError={onError}
       />
 
-      {/* VLC İçin Ekrana Özel Kontrol Butonları Eklendi (Play/Pause) */}
-      {ready && (
-        <View style={styles.vlcControls}>
-          <Pressable onPress={() => setPaused(!paused)} style={styles.controlBtn}>
-            <Ionicons name={paused ? "play" : "pause"} size={24} color="#fff" />
-          </Pressable>
+      {/* ============================================================
+          MÜDÜRÜN İSTEDİĞİ O PREMIUM TAM EKRAN KONTROL KATMANI (CUSTOM UI)
+         ============================================================ */}
+      {ready && showControls && (
+        <View style={styles.vlcUiOverlay}>
+          
+          {/* Üst Kısım: Çark İkonu (Ayarlar) */}
+          <View style={styles.vlcUiTop}>
+            <View />
+            <Pressable onPress={() => alert("Ses ve Altyazi Ayarlari")} style={styles.uiCircleBtn}>
+              <Ionicons name="settings-sharp" size={22} color="#fff" />
+            </Pressable>
+          </View>
+
+          {/* Orta Kısım: İleri - Geri ve Play/Pause Tuşları */}
+          <View style={styles.vlcUiCenter}>
+            <Pressable onPress={() => alert("10 Saniye Geri")} style={styles.uiCircleBtn}>
+              <Ionicons name="play-back" size={24} color="#fff" />
+            </Pressable>
+            
+            <Pressable onPress={() => setPaused(!paused)} style={[styles.uiCircleBtn, { width: 60, height: 60, borderRadius: 30 }]}>
+              <Ionicons name={paused ? "play" : "pause"} size={32} color="#fff" />
+            </Pressable>
+
+            <Pressable onPress={() => alert("10 Saniye İleri")} style={styles.uiCircleBtn}>
+              <Ionicons name="play-forward" size={24} color="#fff" />
+            </Pressable>
+          </View>
+
+          {/* Alt Kısım: Sarma Çubuğu (Taklit) ve Tam Ekran Butonu */}
+          <View style={styles.vlcUiBottom}>
+            <View style={styles.fakeProgressBar}>
+              <View style={styles.fakeProgressFill} />
+            </View>
+            
+            <Pressable onPress={() => setIsFullscreen(!isFullscreen)} style={styles.uiCircleBtn}>
+              <Ionicons name={isFullscreen ? "contract" : "expand"} size={22} color="#fff" />
+            </Pressable>
+          </View>
+
         </View>
       )}
 
-      {!ready && !hasError && (
+      {!ready && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator color="#fff" size="large" />
-          <Text style={{ color: "#aaa", marginTop: 8 }}>VLC Motoru Yukleniyor...</Text>
+          <Text style={{ color: "#aaa", marginTop: 8 }}>VLC Yukleniyor...</Text>
         </View>
       )}
-    </View>
+    </Pressable>
   );
 }
 
@@ -406,9 +354,10 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginHorizontal: 12,
   },
-  videoBox: { width: "100%", aspectRatio: 16 / 9, backgroundColor: "#000", position: 'relative' },
+  videoBox: { width: "100%", aspectRatio: 16 / 9, backgroundColor: "#000" },
+  videoBoxFullscreen: { width: "100%", height: "100%", aspectRatio: undefined },
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10 },
-  err: { color: "red", textAlign: "center", paddingHorizontal: 20 },
+  err: { color: "red", textAlign: "center" },
   loading: { color: "#aaa" },
   loadingOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -447,22 +396,36 @@ const styles = StyleSheet.create({
     justifyContent: "center"
   },
   altText: { color: "#000", fontWeight: "700" },
-  vlcControls: {
-    position: "absolute",
-    bottom: 10,
-    left: 10,
-    right: 10,
-    flexDirection: "row",
-    justifyContent: "flex-start",
-    alignItems: "center",
+  
+  // Custom VLC UI Katmanları
+  vlcUiOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.4)",
+    justifyContent: "space-between",
+    padding: 15,
   },
-  controlBtn: {
-    backgroundColor: "rgba(0,0,0,0.6)",
-    padding: 8,
-    borderRadius: 20,
+  vlcUiTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  vlcUiCenter: { flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 30 },
+  vlcUiBottom: { flexDirection: "row", alignItems: "center", gap: 15 },
+  uiCircleBtn: {
     width: 40,
     height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(0,0,0,0.6)",
     alignItems: "center",
     justifyContent: "center"
+  },
+  fakeProgressBar: {
+    flex: 1,
+    height: 4,
+    backgroundColor: "rgba(255,255,255,0.3)",
+    borderRadius: 2,
+    justifyContent: "center"
+  },
+  fakeProgressFill: {
+    width: "35%", // Canlı yayın için temsil çubuğu
+    height: "100%",
+    backgroundColor: "#ff9f43",
+    borderRadius: 2
   }
 });
