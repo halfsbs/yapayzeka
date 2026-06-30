@@ -366,7 +366,7 @@ function VlcPlayer({
         source={{
           uri: url,
           initOptions: [
-            "--network-caching=5000", // 4K donmasin diye 5 saniyeye cikardim kanka
+            "--network-caching=5000", // MÜDÜR: Donmayi bitiren o kritik 5 saniyelik cache guncellemesi
             "--live-caching=5000",
             "--file-caching=5000",
             "--codec=avcodec,all",
