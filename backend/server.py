@@ -382,9 +382,9 @@ def normalize_name(s: str) -> str:
     if not s:
         return ""
     x = s.lower()
-    # Sayıları ve harfleri ayır: TRT1 → TRT 1, 4K → 4 K
-    x = re.sub(r'([a-zA-Z]+)(\d)', r' ', x)
-    x = re.sub(r'(\d)([a-zA-Z]+)', r' ', x)
+    # Sayıları harflerden ayır: TRT1 -> trt 1, beIN2 -> bein 2, 4K -> 4 k
+    x = re.sub(r'([a-z]+)(\d)', r'\1 \2', x)
+    x = re.sub(r'(\d)([a-z]+)', r'\1 \2', x)
     x = _NORM_PUNCT.sub(" ", x)
     x = _NORM_STRIP.sub(" ", x)
     x = _NORM_WS.sub(" ", x).strip()
@@ -1095,28 +1095,42 @@ async def get_stream(channel_id: str, user: dict = Depends(get_current_user)):
     nname = ch.get("norm_name") or normalize_name(ch.get("name", ""))
     fallback_urls: List[str] = []
     seen_urls = {primary_url} if primary_url else set()
+
     if nname:
+        # 1. EXACT match: aynı norm_name (TRT1 -> trt 1 ile TRT 1 eşleşir)
         exact = await db.channels.find(
             {"id": {"$ne": channel_id}, "hidden": {"$ne": True}, "norm_name": nname},
             {"_id": 0, "stream_url_enc": 1},
-        ).limit(50).to_list(50)
-        # 2. Token-based partial match (skorlama ile)
+        ).limit(20).to_list(20)
+
+        for d in exact:
+            try:
+                u = fernet.decrypt(d["stream_url_enc"].encode()).decode()
+                if u and u not in seen_urls:
+                    seen_urls.add(u)
+                    fallback_urls.append(u)
+            except Exception:
+                continue
+
+        # 2. PARTIAL match: token bazlı akıllı arama + skorlama
         tokens = [t for t in nname.split() if len(t) >= 2]
-        partial_docs: list = []
         if tokens and len(fallback_urls) < 15:
-            regex = "|".join(re.escape(t) for t in tokens[:6])
+            # OR regex ile geniş arama yap, sonra Python'da skorla
+            regex = "|".join(re.escape(t) for t in tokens[:5])
             partial_docs = await db.channels.find(
                 {"id": {"$ne": channel_id}, "hidden": {"$ne": True},
                  "norm_name": {"$regex": regex, "$ne": nname}},
                 {"_id": 0, "stream_url_enc": 1, "norm_name": 1},
             ).limit(100).to_list(100)
 
-            # En çok ortak token olanları önceliklendir
+            # Skorlama: en çok token eşleşen üstte
             scored = []
+            target_tokens = set(tokens)
             for d in partial_docs:
                 d_tokens = set(d.get("norm_name", "").split())
-                score = len(d_tokens.intersection(set(tokens)))
-                if score >= 2:
+                score = len(d_tokens.intersection(target_tokens))
+                # En az yarısı token eşleşmeli (veya 1'den fazla)
+                if score >= max(1, len(target_tokens) // 2):
                     scored.append((score, d))
 
             scored.sort(reverse=True, key=lambda x: x[0])
@@ -1131,40 +1145,6 @@ async def get_stream(channel_id: str, user: dict = Depends(get_current_user)):
                             break
                 except Exception:
                     continue
-
-        # 3. Name alanında regex arama (norm_name eşleşmezse)
-        if len(fallback_urls) < 15:
-            ch_name = ch.get("name", "")
-            if ch_name:
-                name_pattern = '.*'.join(re.escape(part) for part in ch_name.lower().split())
-                name_matches = await db.channels.find(
-                    {"id": {"$ne": channel_id}, "hidden": {"$ne": True},
-                     "name": {"$regex": name_pattern, "$options": "i", "$ne": ch_name}},
-                    {"_id": 0, "stream_url_enc": 1},
-                ).limit(30).to_list(30)
-                for d in name_matches:
-                    try:
-                        u = fernet.decrypt(d["stream_url_enc"].encode()).decode()
-                        if u and u not in seen_urls:
-                            seen_urls.add(u)
-                            fallback_urls.append(u)
-                            if len(fallback_urls) >= 15:
-                                break
-                    except Exception:
-                        continue
-
-        for d in exact:
-            if d in [x[1] for x in scored] or d in name_matches:
-                continue
-            try:
-                u = fernet.decrypt(d["stream_url_enc"].encode()).decode()
-                if u and u not in seen_urls:
-                    seen_urls.add(u)
-                    fallback_urls.append(u)
-                    if len(fallback_urls) >= 15:
-                        break
-            except Exception:
-                continue
 
     if not primary_url and not fallback_urls:
         raise HTTPException(500, "Yayin okunamadi")
@@ -1950,31 +1930,6 @@ async def on_start():
             logger.info(f"Backfilled norm_name for {count} channels")
     except Exception as e:
         logger.warning(f"norm_name backfill skipped: {e}")
-
-    # norm_name güncelleme - eski formattakileri yeni formata çevir
-    try:
-        from pymongo import UpdateOne
-        cursor = db.channels.find({}, {"_id": 0, "id": 1, "name": 1, "norm_name": 1})
-        bulk_ops = []
-        count = 0
-        async for d in cursor:
-            new_norm = normalize_name(d.get("name", ""))
-            if new_norm and new_norm != d.get("norm_name", ""):
-                bulk_ops.append(UpdateOne(
-                    {"id": d["id"]},
-                    {"$set": {"norm_name": new_norm}}
-                ))
-                if len(bulk_ops) >= 500:
-                    await db.channels.bulk_write(bulk_ops)
-                    count += len(bulk_ops)
-                    bulk_ops = []
-        if bulk_ops:
-            await db.channels.bulk_write(bulk_ops)
-            count += len(bulk_ops)
-        if count > 0:
-            logger.info(f"Updated norm_name for {count} channels")
-    except Exception as e:
-        logger.warning(f"norm_name update skipped: {e}")
 
 
 @app.on_event("shutdown")
