@@ -6,29 +6,11 @@ import {
   Pressable,
   ActivityIndicator,
   StatusBar,
+  FlatList,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api";
-
-// ============================================================
-// HYBRID PLAYER - Gemini UI + Saglam Koruma Mekanizmalari
-//
-// UI Ozellikler (Gemini'den):
-// - Oynatici secim butonlari (Expo Video / VLC)
-// - Tam ekran (Fullscreen) destegi
-// - Custom VLC UI (Netflix tarzi kontroller)
-// - Play/Pause, Ileri/Geri
-// - 3sn otomatik gizlenen kontroller
-// - Cark ikonu (ayarlar)
-//
-// Koruma Mekanizmalari (Bizden + Diger YZ):
-// - isSuccessfullyPlaying: Gorsel geldikten sonra anlik hatalari yok say
-// - errorIgnoreTimeoutRef: onStopped'da 2sn tolerans (VLC drop kurtarma)
-// - nativeErrorDelayRef: 600ms tolerans (asenkron hata yarisi)
-// - Timeout: ExpoVideo 6sn / VLC 12sn
-// - URL degisiminde mode reset
-// ============================================================
 
 let expoVideoPkg: any = null;
 try { expoVideoPkg = require("expo-video"); } catch (e) {}
@@ -179,9 +161,6 @@ function PlayerInner({
   isFullscreen: boolean;
   setIsFullscreen: (v: boolean) => void;
 }) {
-  // URL degistiginde mode'u resetle (ama selectedMode disaridan geldigi icin burada resetlemiyoruz)
-  // selectedMode disaridan geldigi icin kullanici manuel degistirebilir
-
   if (mode === "expo-video" && expoVideoPkg) {
     return <ExpoVideoPlayer url={url} onError={onTryNext} />;
   }
@@ -205,9 +184,6 @@ function PlayerInner({
   );
 }
 
-// ============================================================
-// EXPO-VIDEO - KORUMALI
-// ============================================================
 function ExpoVideoPlayer({ url, onError }: { url: string; onError: () => void }) {
   const [ready, setReady] = useState(false);
   const [hasError, setHasError] = useState(false);
@@ -284,9 +260,6 @@ function ExpoVideoPlayer({ url, onError }: { url: string; onError: () => void })
   );
 }
 
-// ============================================================
-// VLC PLAYER - CELIK ZIRHLI + CUSTOM UI
-// ============================================================
 function VlcPlayer({
   url,
   onError,
@@ -302,7 +275,13 @@ function VlcPlayer({
   const [paused, setPaused] = useState(false);
   const [showControls, setShowControls] = useState(true);
   const [hasError, setHasError] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [totalTime, setTotalTime] = useState(0);
+  
+  const [showSettings, setShowSettings] = useState(false);
+  const [tracks, setTracks] = useState<{ id: number; name: string }[]>([]);
 
+  const vlcRef = useRef<any>(null);
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const readyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const errorIgnoreTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -316,7 +295,19 @@ function VlcPlayer({
   const triggerControls = () => {
     setShowControls(true);
     if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
-    controlsTimeoutRef.current = setTimeout(() => setShowControls(false), 3000);
+    controlsTimeoutRef.current = setTimeout(() => {
+      if (!showSettings) setShowControls(false);
+    }, 3000);
+  };
+
+  const handleSeek = (direction: "forward" | "backward") => {
+    if (!vlcRef.current) return;
+    let change = direction === "forward" ? 10000 : -10000;
+    let targetTime = currentTime + change;
+    if (targetTime < 0) targetTime = 0;
+    if (totalTime > 0 && targetTime > totalTime) targetTime = totalTime;
+    vlcRef.current.seek(targetTime);
+    triggerControls();
   };
 
   const handleError = useCallback((e: any) => {
@@ -339,6 +330,8 @@ function VlcPlayer({
     setHasError(false);
     isFailedTriggered.current = false;
     isSuccessfullyPlaying.current = false;
+    setCurrentTime(0);
+    setTotalTime(0);
 
     if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
     if (errorIgnoreTimeoutRef.current) clearTimeout(errorIgnoreTimeoutRef.current);
@@ -361,15 +354,21 @@ function VlcPlayer({
     };
   }, [url, onError]);
 
+  const progressPercent = useMemo(() => {
+    if (totalTime === 0) return "0%";
+    return `${(currentTime / totalTime) * 100}%`;
+  }, [currentTime, totalTime]);
+
   return (
     <Pressable style={{ flex: 1 }} onPress={triggerControls}>
       <VLCPlayer
+        ref={vlcRef}
         source={{
           uri: url,
           initOptions: [
-            "--network-caching=2000",
-            "--live-caching=2000",
-            "--file-caching=2000",
+            "--network-caching=5000", // 4K donmasin diye 5 saniyeye cikardim kanka
+            "--live-caching=5000",
+            "--file-caching=5000",
             "--codec=avcodec,all",
           ],
         }}
@@ -391,6 +390,10 @@ function VlcPlayer({
             if (readyTimerRef.current) { clearTimeout(readyTimerRef.current); readyTimerRef.current = null; }
           }
         }}
+        onProgress={(e: any) => {
+          if (e?.currentTime !== undefined) setCurrentTime(e.currentTime);
+          if (e?.duration !== undefined) setTotalTime(e.duration);
+        }}
         onError={handleError}
         onStopped={() => {
           if (errorIgnoreTimeoutRef.current) clearTimeout(errorIgnoreTimeoutRef.current);
@@ -401,36 +404,69 @@ function VlcPlayer({
         }}
       />
 
-      {/* CUSTOM VLC UI OVERLAY */}
       {ready && showControls && (
         <View style={styles.vlcUiOverlay}>
           <View style={styles.vlcUiTop}>
             <View />
-            <Pressable onPress={() => alert("Ses ve Altyazi Ayarlari")} style={styles.uiCircleBtn}>
+            <Pressable 
+              onPress={() => {
+                const audioTracks = vlcRef.current?.getAudioTracks?.() || [];
+                setTracks(audioTracks.length > 0 ? audioTracks : [{ id: 1, name: "Ana Ses Parçası" }]);
+                setShowSettings(!showSettings);
+              }} 
+              style={styles.uiCircleBtn}
+            >
               <Ionicons name="settings-sharp" size={22} color="#fff" />
             </Pressable>
           </View>
 
           <View style={styles.vlcUiCenter}>
-            <Pressable onPress={() => alert("10 Saniye Geri")} style={styles.uiCircleBtn}>
+            <Pressable onPress={() => handleSeek("backward")} style={styles.uiCircleBtn}>
               <Ionicons name="play-back" size={24} color="#fff" />
             </Pressable>
             <Pressable onPress={() => setPaused(!paused)} style={[styles.uiCircleBtn, { width: 60, height: 60, borderRadius: 30 }]}>
               <Ionicons name={paused ? "play" : "pause"} size={32} color="#fff" />
             </Pressable>
-            <Pressable onPress={() => alert("10 Saniye Ileri")} style={styles.uiCircleBtn}>
+            <Pressable onPress={() => handleSeek("forward")} style={styles.uiCircleBtn}>
               <Ionicons name="play-forward" size={24} color="#fff" />
             </Pressable>
           </View>
 
           <View style={styles.vlcUiBottom}>
             <View style={styles.fakeProgressBar}>
-              <View style={styles.fakeProgressFill} />
+              <View style={[styles.fakeProgressFill, { width: totalTime > 0 ? progressPercent : "100%" }]} />
             </View>
             <Pressable onPress={() => setIsFullscreen(!isFullscreen)} style={styles.uiCircleBtn}>
               <Ionicons name={isFullscreen ? "contract" : "expand"} size={22} color="#fff" />
             </Pressable>
           </View>
+
+          {showSettings && (
+            <View style={styles.settingsModal}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Ses / Altyazi Ayarlari</Text>
+                <Pressable onPress={() => setShowSettings(false)}>
+                  <Ionicons name="close" size={22} color="#fff" />
+                </Pressable>
+              </View>
+              <FlatList
+                data={tracks}
+                keyExtractor={(item) => item.id.toString()}
+                renderItem={({ item }) => (
+                  <Pressable 
+                    style={styles.trackItem}
+                    onPress={() => {
+                      vlcRef.current?.setAudioTrack?.(item.id);
+                      setShowSettings(false);
+                    }}
+                  >
+                    <Ionicons name="volume-high-outline" size={18} color="#fff" />
+                    <Text style={styles.trackText}>{item.name}</Text>
+                  </Pressable>
+                )}
+              />
+            </View>
+          )}
         </View>
       )}
 
@@ -505,7 +541,6 @@ const styles = StyleSheet.create({
   },
   altText: { color: "#000", fontWeight: "700" },
 
-  // Custom VLC UI
   vlcUiOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(0,0,0,0.4)",
@@ -531,9 +566,24 @@ const styles = StyleSheet.create({
     justifyContent: "center"
   },
   fakeProgressFill: {
-    width: "35%",
     height: "100%",
     backgroundColor: "#ff9f43",
     borderRadius: 2
-  }
+  },
+  settingsModal: {
+    position: "absolute",
+    right: 15,
+    top: 65,
+    width: 220,
+    backgroundColor: "rgba(26, 26, 26, 0.95)",
+    borderRadius: 8,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: "#444",
+    zIndex: 999
+  },
+  modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10, borderBottomWidth: 1, borderBottomColor: "#333", paddingBottom: 5 },
+  modalTitle: { color: "#fff", fontSize: 12, fontWeight: "700" },
+  trackItem: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 8, paddingHorizontal: 4 },
+  trackText: { color: "#fff", fontSize: 13 }
 });
