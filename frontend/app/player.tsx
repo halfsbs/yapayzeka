@@ -293,7 +293,6 @@ function ExpoVideoPlayer({
       try {
         GoogleCastPkg.getCastContext().presentCastDialog();
         GoogleCastPkg.getCastSessionManager().startSession();
-        // TV bağlandığında akışı TV'ye pasla kanka
         GoogleCastPkg.getCastContext().setRemoteMediaClient({
           mediaInfo: { contentUrl: url, metadata: { title: title, mediaType: 'movie' } }
         });
@@ -380,12 +379,11 @@ function ExpoVideoPlayer({
         player={player}
         contentFit="cover"
         nativeControls={false}
-        allowsFullscreen={false}
+        // UYARI VEREN allowsFullscreen SİLİNDİ MÜDÜR
       />
       
       {ready && showControls && (
         <View style={styles.vlcUiOverlay} pointerEvents="box-none">
-          {/* Üst Bar: Yansıtma tuşu buraya geldi müdür */}
           <View style={[styles.vlcUiTop, { justifyContent: 'flex-end' }]} pointerEvents="box-none">
             <Pressable onPress={handleCast} style={styles.uiCircleBtn}>
               <Ionicons name="tv-outline" size={20} color="#fff" />
@@ -679,18 +677,17 @@ function VlcPlayer({
         style={{ flex: 1, width: "100%", height: "100%" }}
         onPlaying={() => {
           setReady(true);
-          setIsRecovering(false); // Canlanınca yazıyı kapat müdür
+          setIsRecovering(false);
           isSuccessfullyPlaying.current = true;
           if (readyTimerRef.current) { clearTimeout(readyTimerRef.current); readyTimerRef.current = null; }
-          
-          if (recoveryTimerRef.current) { 
-            clearTimeout(recoveryTimerRef.current); 
-            recoveryTimerRef.current = null; 
-          }
+          if (recoveryTimerRef.current) { clearTimeout(recoveryTimerRef.current); recoveryTimerRef.current = null; }
           setTimeout(fetchTracks, 1500);
         }}
         onBuffering={(e: any) => {
-          if (e?.isBuffering === 0) {
+          // VLC'den gelen 0 veya false ise buffer bitti demektir kanka.
+          const isNotBuffering = e?.isBuffering === 0 || e?.isBuffering === false;
+
+          if (isNotBuffering) {
             setReady(true);
             setIsRecovering(false);
             isSuccessfullyPlaying.current = true;
@@ -702,10 +699,13 @@ function VlcPlayer({
                 console.log("[VLC] Buffer tıkandı, akış yenileniyor...");
                 setIsRecovering(true);
                 try {
-                  vlcRef.current?.seekTo?.(currentTime + 1000); 
+                  vlcRef.current?.seekTo?.(currentTime + 1500); 
                 } catch {}
                 
-                recoveryTimerRef.current = null;
+                // Üst üste log basmasını engellemek için biraz gecikmeli sıfırlıyoruz.
+                setTimeout(() => {
+                  recoveryTimerRef.current = null;
+                }, 2000);
               }, 4000);
             }
           }
@@ -713,6 +713,20 @@ function VlcPlayer({
         onProgress={(e: any) => {
           if (e?.currentTime !== undefined) setCurrentTime(e.currentTime);
           if (e?.duration !== undefined) setTotalTime(e.duration);
+
+          // 🎯 EFSANE KESİN ÇÖZÜM:
+          // Eğer VLC saniye saniye ilerliyorsa yayın kesinlikle oynuyordur! 
+          // Yazı ekranda mahsur kaldıysa acımasızca gizle.
+          setIsRecovering((prev) => {
+            if (prev) return false; 
+            return prev;
+          });
+
+          // Video ilerlerken arkada asılı kalan recovery sayacı varsa onu da çöpe at
+          if (recoveryTimerRef.current) {
+            clearTimeout(recoveryTimerRef.current);
+            recoveryTimerRef.current = null;
+          }
         }}
         onError={handleError}
         onStopped={() => {
@@ -727,7 +741,6 @@ function VlcPlayer({
 
       {ready && showControls && (
         <View style={styles.vlcUiOverlay} pointerEvents="box-none">
-          {/* VLC için de üst sağ tarafa yansıtma butonunu gömdük kanka */}
           <View style={styles.vlcUiTop} pointerEvents="box-none">
             <View />
             <View style={{ flexDirection: "row", gap: 10 }}>
