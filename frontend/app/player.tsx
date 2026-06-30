@@ -7,6 +7,9 @@ import {
   ActivityIndicator,
   StatusBar,
   FlatList,
+  useWindowDimensions,
+  PanResponder,
+  GestureResponderEvent,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -18,7 +21,25 @@ try { expoVideoPkg = require("expo-video"); } catch (e) {}
 let vlcPlayerPkg: any = null;
 try { vlcPlayerPkg = require("react-native-vlc-media-player"); } catch (e) {}
 
+let ScreenOrientation: any = null;
+try { ScreenOrientation = require("expo-screen-orientation"); } catch (e) {}
+
 type PlayerMode = "expo-video" | "vlc";
+type TrackItem = { id: number; name: string; type: "audio" | "subtitle" };
+
+function isM3U8(url: string): boolean {
+  return /\.m3u8?/i.test(url) || url.includes("type=m3u") || url.includes("type=m3u_plus");
+}
+
+function formatTime(ms: number): string {
+  if (!ms || ms < 0) return "0:00";
+  const totalSeconds = Math.floor(ms / 1000);
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  if (h > 0) return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
 
 export default function Player() {
   const { id, name } = useLocalSearchParams<{ id: string; name: string }>();
@@ -72,7 +93,7 @@ export default function Player() {
 
   return (
     <View style={styles.root}>
-      <StatusBar barStyle="light-content" hidden={true} />
+      <StatusBar barStyle="light-content" hidden={isFullscreen} />
 
       {!isFullscreen && (
         <View style={styles.head}>
@@ -189,18 +210,23 @@ function ExpoVideoPlayer({ url, onError }: { url: string; onError: () => void })
   const [hasError, setHasError] = useState(false);
   const isFailedTriggered = useRef(false);
   const readyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isSuccessfullyPlaying = useRef(false);
+  const statusSubRef = useRef<any>(null);
 
   const useVideoPlayer = expoVideoPkg.useVideoPlayer;
   const VideoView = expoVideoPkg.VideoView;
 
-  const finalLiveUrl = useMemo(() => {
+  const finalUrl = useMemo(() => {
+    if (isM3U8(url)) return url;
     return url.includes("?") ? `${url}&_cb=${Date.now()}` : `${url}?_cb=${Date.now()}`;
   }, [url]);
 
-  const player = useVideoPlayer(finalLiveUrl, (p: any) => {
+  const player = useVideoPlayer(finalUrl, (p: any) => {
     p.loop = false;
     p.muted = false;
+    p.showNowPlayingNotification = false;
+    p.staysActiveInBackground = true;
     p.play();
   });
 
@@ -211,49 +237,83 @@ function ExpoVideoPlayer({ url, onError }: { url: string; onError: () => void })
     isSuccessfullyPlaying.current = false;
 
     if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
+    if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
 
-    const sub = player.addListener("statusChange", (event: any) => {
-      const status = event?.status || player.status;
-      const err = event?.error || player.error;
+    const checkStatus = (status?: string, err?: any) => {
+      const s = status ?? player?.status;
+      const e = err ?? player?.error;
 
-      if (status === "readyToPlay") {
+      if (s === "readyToPlay" || s === "playing") {
         setReady(true);
         isSuccessfullyPlaying.current = true;
         if (readyTimerRef.current) { clearTimeout(readyTimerRef.current); readyTimerRef.current = null; }
+        if (stallTimerRef.current) { clearTimeout(stallTimerRef.current); stallTimerRef.current = null; }
       }
 
-      if (status === "error" || err) {
-        if (isSuccessfullyPlaying.current) {
-          console.log("[ExpoVideo] Video zaten oynatiliyor, anlik hata yoksayildi.");
-          return;
+      // Stall Detection: Yayın başladıktan sonra donarsa otomatik tetikle kanka
+      if (isSuccessfullyPlaying.current && s !== "playing" && s !== "readyToPlay") {
+        if (!stallTimerRef.current) {
+          stallTimerRef.current = setTimeout(() => {
+            console.log("[ExpoVideo] Yayın dondu, canlandırılıyor...");
+            player?.play();
+          }, 4000);
         }
+      } else {
+        if (stallTimerRef.current) { clearTimeout(stallTimerRef.current); stallTimerRef.current = null; }
+      }
+
+      if ((s === "error" || s === "idle") && e) {
+        if (isSuccessfullyPlaying.current) return;
         setHasError(true);
         if (!isFailedTriggered.current) {
           isFailedTriggered.current = true;
           onError();
         }
       }
+    };
+
+    statusSubRef.current = player?.addListener?.("statusChange", (ev: any) => {
+      checkStatus(ev?.status, ev?.error);
     });
+
+    const pollTimer = setInterval(() => {
+      if (!hasError && !isFailedTriggered.current) {
+        checkStatus();
+      } else {
+        clearInterval(pollTimer);
+      }
+    }, 800);
 
     readyTimerRef.current = setTimeout(() => {
       if (!ready && !hasError && !isFailedTriggered.current && !isSuccessfullyPlaying.current) {
         isFailedTriggered.current = true;
         onError();
       }
-    }, 6000);
+    }, 12000);
 
     return () => {
-      if (sub && typeof sub.remove === "function") sub.remove();
+      clearInterval(pollTimer);
+      if (statusSubRef.current && typeof statusSubRef.current.remove === "function") {
+        statusSubRef.current.remove();
+      }
       if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
+      if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
     };
   }, [url, onError]);
 
   return (
     <View style={{ flex: 1 }}>
-      <VideoView style={{ flex: 1 }} player={player} contentFit="contain" nativeControls={true} allowsFullscreen={true} />
+      <VideoView
+        style={{ flex: 1 }}
+        player={player}
+        contentFit="cover"
+        nativeControls={true}
+        allowsFullscreen={false}
+      />
       {!ready && !hasError && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator color="#fff" size="large" />
+          <Text style={{ color: "#aaa", marginTop: 8 }}>Expo Video Yukleniyor...</Text>
         </View>
       )}
     </View>
@@ -271,123 +331,268 @@ function VlcPlayer({
   isFullscreen: boolean;
   setIsFullscreen: (v: boolean) => void;
 }) {
+  const { width, height } = useWindowDimensions();
+  const isLandscape = width > height;
+
   const [ready, setReady] = useState(false);
   const [paused, setPaused] = useState(false);
   const [showControls, setShowControls] = useState(true);
   const [hasError, setHasError] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [totalTime, setTotalTime] = useState(0);
-  
+  const [isRecovering, setIsRecovering] = useState(false);
+
   const [showSettings, setShowSettings] = useState(false);
-  const [tracks, setTracks] = useState<{ id: number; name: string }[]>([]);
+  const [settingsTab, setSettingsTab] = useState<"audio" | "subtitle">("audio");
+  const [audioTracks, setAudioTracks] = useState<TrackItem[]>([]);
+  const [subtitleTracks, setSubtitleTracks] = useState<TrackItem[]>([]);
+  const [selectedAudioId, setSelectedAudioId] = useState<number>(1);
+  const [selectedSubtitleId, setSelectedSubtitleId] = useState<number>(-1);
 
   const vlcRef = useRef<any>(null);
+  const progressBarRef = useRef<View>(null);
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const readyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const errorIgnoreTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nativeErrorDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const trackFetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isSuccessfullyPlaying = useRef(false);
   const isFailedTriggered = useRef(false);
 
   const VLCPlayer = vlcPlayerPkg.VLCPlayer;
 
-  const triggerControls = () => {
+  const enterFullscreen = useCallback(async () => {
+    setIsFullscreen(true);
+    setShowControls(true);
+    if (ScreenOrientation) {
+      try {
+        await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+      } catch (e) {}
+    }
+  }, [setIsFullscreen]);
+
+  const exitFullscreen = useCallback(async () => {
+    setIsFullscreen(false);
+    setShowControls(true);
+    if (ScreenOrientation) {
+      try {
+        await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+      } catch (e) {}
+    }
+  }, [setIsFullscreen]);
+
+  const triggerControls = useCallback(() => {
     setShowControls(true);
     if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
     controlsTimeoutRef.current = setTimeout(() => {
       if (!showSettings) setShowControls(false);
-    }, 3000);
-  };
+    }, 4000);
+  }, [showSettings]);
 
-  const handleSeek = (direction: "forward" | "backward") => {
+  const handleSeek = useCallback((direction: "forward" | "backward") => {
     if (!vlcRef.current) return;
-    let change = direction === "forward" ? 10000 : -10000;
+    const change = direction === "forward" ? 10000 : -10000;
     let targetTime = currentTime + change;
     if (targetTime < 0) targetTime = 0;
     if (totalTime > 0 && targetTime > totalTime) targetTime = totalTime;
-    vlcRef.current.seek(targetTime);
+    try {
+      vlcRef.current.seekTo?.(Math.floor(targetTime));
+    } catch (e) {}
     triggerControls();
-  };
+  }, [currentTime, totalTime, triggerControls]);
+
+  const seekToPosition = useCallback((ratio: number) => {
+    if (!vlcRef.current || totalTime <= 0) return;
+    const target = Math.floor(ratio * totalTime);
+    try {
+      vlcRef.current.seekTo?.(target);
+    } catch (e) {}
+  }, [totalTime]);
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (evt: GestureResponderEvent) => {
+        if (totalTime <= 0) return;
+        progressBarRef.current?.measure((_fx, _fy, pw, _ph, px) => {
+          const ratio = Math.max(0, Math.min(1, (evt.nativeEvent.pageX - px) / pw));
+          seekToPosition(ratio);
+        });
+      },
+      onPanResponderMove: (evt: GestureResponderEvent) => {
+        if (totalTime <= 0) return;
+        progressBarRef.current?.measure((_fx, _fy, pw, _ph, px) => {
+          const ratio = Math.max(0, Math.min(1, (evt.nativeEvent.pageX - px) / pw));
+          seekToPosition(ratio);
+        });
+      },
+    })
+  ).current;
 
   const handleError = useCallback((e: any) => {
     if (nativeErrorDelayRef.current) clearTimeout(nativeErrorDelayRef.current);
     nativeErrorDelayRef.current = setTimeout(() => {
-      if (isSuccessfullyPlaying.current) {
-        console.log("[VLC] Video zaten oynatiliyor, anlik hata yoksayildi.");
-        return;
-      }
+      if (isSuccessfullyPlaying.current) return;
       setHasError(true);
       if (!isFailedTriggered.current) {
         isFailedTriggered.current = true;
         onError();
       }
-    }, 600);
+    }, 800);
   }, [onError]);
+
+  const fetchTracks = useCallback(() => {
+    if (!vlcRef.current) return;
+    try {
+      const rawAudio = vlcRef.current.getAudioTracks?.() || [];
+      if (rawAudio.length > 0) {
+        setAudioTracks(rawAudio.map((t: any) => ({
+          id: t.id ?? t.index ?? 1,
+          name: t.name || t.language || `Ses Parçası ${t.id ?? t.index ?? 1}`,
+          type: "audio" as const,
+        })));
+      } else {
+        setAudioTracks([{ id: 1, name: "Ana Ses", type: "audio" }]);
+      }
+    } catch {
+      setAudioTracks([{ id: 1, name: "Ana Ses", type: "audio" }]);
+    }
+
+    try {
+      const rawSubs = vlcRef.current.getSubtitleTracks?.() || [];
+      if (rawSubs.length > 0) {
+        setSubtitleTracks([
+          { id: -1, name: "Altyazi Kapali", type: "subtitle" },
+          ...rawSubs.map((t: any) => ({
+            id: t.id ?? t.index ?? 0,
+            name: t.name || t.language || `Altyazi ${t.id ?? t.index ?? 0}`,
+            type: "subtitle" as const,
+          })),
+        ]);
+      } else {
+        setSubtitleTracks([{ id: -1, name: "Altyazi Kapali", type: "subtitle" }]);
+      }
+    } catch {
+      setSubtitleTracks([{ id: -1, name: "Altyazi Kapali", type: "subtitle" }]);
+    }
+  }, []);
 
   useEffect(() => {
     setReady(false);
     setHasError(false);
+    setIsRecovering(false);
     isFailedTriggered.current = false;
     isSuccessfullyPlaying.current = false;
     setCurrentTime(0);
     setTotalTime(0);
+    setAudioTracks([]);
+    setSubtitleTracks([]);
 
     if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
     if (errorIgnoreTimeoutRef.current) clearTimeout(errorIgnoreTimeoutRef.current);
     if (nativeErrorDelayRef.current) clearTimeout(nativeErrorDelayRef.current);
+    if (trackFetchTimerRef.current) clearTimeout(trackFetchTimerRef.current);
+    if (recoveryTimerRef.current) clearTimeout(recoveryTimerRef.current);
 
     triggerControls();
+
+    trackFetchTimerRef.current = setTimeout(() => {
+      if (isSuccessfullyPlaying.current) fetchTracks();
+    }, 2000);
 
     readyTimerRef.current = setTimeout(() => {
       if (!ready && !hasError && !isFailedTriggered.current && !isSuccessfullyPlaying.current) {
         isFailedTriggered.current = true;
         onError();
       }
-    }, 12000);
+    }, 15000);
 
     return () => {
       if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
       if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
       if (errorIgnoreTimeoutRef.current) clearTimeout(errorIgnoreTimeoutRef.current);
       if (nativeErrorDelayRef.current) clearTimeout(nativeErrorDelayRef.current);
+      if (trackFetchTimerRef.current) clearTimeout(trackFetchTimerRef.current);
+      if (recoveryTimerRef.current) clearTimeout(recoveryTimerRef.current);
     };
-  }, [url, onError]);
+  }, [url, onError, fetchTracks]);
+
+  useEffect(() => {
+    if (!ScreenOrientation) return;
+    if (isFullscreen) {
+      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => {});
+    } else {
+      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
+    }
+  }, [isFullscreen]);
 
   const progressPercent = useMemo(() => {
     if (totalTime === 0) return "0%";
-    return `${(currentTime / totalTime) * 100}%`;
+    return `${Math.min(100, Math.max(0, (currentTime / totalTime) * 100))}%`;
   }, [currentTime, totalTime]);
+
+  const vlcInitOptions = useMemo(() => {
+    return [
+      "--network-caching=6000", // CANLI YAYIN İÇİN EN İDEAL SÜRE: 6 saniye havuz kanka!
+      "--live-caching=6000",
+      "--file-caching=6000",
+      "--udp-caching=6000",
+      "--input-buffer-size=1048576", // 1MB Girdi Havuzu
+      "--http-reconnect",            // Bağlantı koparsa otomatik yeniden yakala müdür
+      "--http-keepalive",            // Hattı sürekli canlı tut
+      "--codec=all",
+      "--no-drop-late-frames",
+      "--skip-frames",
+      "--rtsp-tcp",
+      "--clock-jitter=0",
+      "--clock-synchro=0",
+    ];
+  }, []);
+
+  const videoAspectRatio = useMemo(() => {
+    return "16:9"; 
+  }, []);
 
   return (
     <Pressable style={{ flex: 1 }} onPress={triggerControls}>
       <VLCPlayer
         ref={vlcRef}
-        source={{
-          uri: url,
-          initOptions: [
-            "--network-caching=5000", // MÜDÜR: Donmayi bitiren o kritik 5 saniyelik cache guncellemesi
-            "--live-caching=5000",
-            "--file-caching=5000",
-            "--codec=avcodec,all",
-          ],
-        }}
+        source={{ uri: url, initOptions: vlcInitOptions }}
         autoplay={true}
         paused={paused}
-        autoAspectRatio={true}
-        videoAspectRatio="16:9"
-        resizeMode="contain"
-        style={{ flex: 1 }}
+        autoAspectRatio={false} 
+        videoAspectRatio={videoAspectRatio}
+        resizeMode={isFullscreen || isLandscape ? "stretch" : "contain"} 
+        style={{ flex: 1, width: "100%", height: "100%" }}
         onPlaying={() => {
           setReady(true);
+          setIsRecovering(false);
           isSuccessfullyPlaying.current = true;
           if (readyTimerRef.current) { clearTimeout(readyTimerRef.current); readyTimerRef.current = null; }
+          if (recoveryTimerRef.current) { clearTimeout(recoveryTimerRef.current); recoveryTimerRef.current = null; }
+          setTimeout(fetchTracks, 1500);
         }}
         onBuffering={(e: any) => {
           if (e?.isBuffering === 0) {
             setReady(true);
+            setIsRecovering(false);
             isSuccessfullyPlaying.current = true;
             if (readyTimerRef.current) { clearTimeout(readyTimerRef.current); readyTimerRef.current = null; }
+            if (recoveryTimerRef.current) { clearTimeout(recoveryTimerRef.current); recoveryTimerRef.current = null; }
+          } else {
+            // Akıllı Kurtarma Mekanizması: Eğer yayın akarken 4 saniyeden uzun donarsa sars kanka!
+            if (isSuccessfullyPlaying.current && !recoveryTimerRef.current) {
+              recoveryTimerRef.current = setTimeout(() => {
+                console.log("[VLC] Buffer tıkandı, akış yenileniyor...");
+                setIsRecovering(true);
+                try {
+                  vlcRef.current?.seekTo?.(currentTime + 1000); // Akışı 1 saniye ileri iterek canlandır müdür
+                } catch {}
+              }, 4000);
+            }
           }
         }}
         onProgress={(e: any) => {
@@ -405,22 +610,26 @@ function VlcPlayer({
       />
 
       {ready && showControls && (
-        <View style={styles.vlcUiOverlay}>
-          <View style={styles.vlcUiTop}>
+        <View style={styles.vlcUiOverlay} pointerEvents="box-none">
+          <View style={styles.vlcUiTop} pointerEvents="box-none">
             <View />
-            <Pressable 
-              onPress={() => {
-                const audioTracks = vlcRef.current?.getAudioTracks?.() || [];
-                setTracks(audioTracks.length > 0 ? audioTracks : [{ id: 1, name: "Ana Ses Parçası" }]);
-                setShowSettings(!showSettings);
-              }} 
-              style={styles.uiCircleBtn}
-            >
-              <Ionicons name="settings-sharp" size={22} color="#fff" />
-            </Pressable>
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <Pressable
+                onPress={() => { setSettingsTab("audio"); setShowSettings(!showSettings); triggerControls(); }}
+                style={[styles.uiCircleBtn, showSettings && settingsTab === "audio" && { backgroundColor: "#ff9f43" }]}
+              >
+                <Ionicons name="musical-notes" size={20} color="#fff" />
+              </Pressable>
+              <Pressable
+                onPress={() => { setSettingsTab("subtitle"); setShowSettings(!showSettings); triggerControls(); }}
+                style={[styles.uiCircleBtn, showSettings && settingsTab === "subtitle" && { backgroundColor: "#ff9f43" }]}
+              >
+                <Ionicons name="text" size={20} color="#fff" />
+              </Pressable>
+            </View>
           </View>
 
-          <View style={styles.vlcUiCenter}>
+          <View style={styles.vlcUiCenter} pointerEvents="box-none">
             <Pressable onPress={() => handleSeek("backward")} style={styles.uiCircleBtn}>
               <Ionicons name="play-back" size={24} color="#fff" />
             </Pressable>
@@ -432,11 +641,40 @@ function VlcPlayer({
             </Pressable>
           </View>
 
-          <View style={styles.vlcUiBottom}>
-            <View style={styles.fakeProgressBar}>
-              <View style={[styles.fakeProgressFill, { width: totalTime > 0 ? progressPercent : "100%" }]} />
+          <View style={styles.vlcUiBottom} pointerEvents="box-none">
+            <Text style={{ color: "#fff", fontSize: 11, minWidth: 35 }}>{formatTime(currentTime)}</Text>
+
+            <View
+              ref={progressBarRef}
+              style={styles.progressBarContainer}
+              {...panResponder.panHandlers}
+              onTouchStart={(e) => {
+                if (totalTime <= 0) return;
+                progressBarRef.current?.measure((_fx, _fy, pw, _ph, px) => {
+                  const ratio = Math.max(0, Math.min(1, (e.nativeEvent.pageX - px) / pw));
+                  seekToPosition(ratio);
+                });
+              }}
+            >
+              <View style={styles.progressBarTrack}>
+                <View style={[styles.progressBarFill, { width: totalTime > 0 ? progressPercent : "100%" }]} />
+              </View>
+              {totalTime > 0 && (
+                <View style={[styles.progressHandle, { left: progressPercent }]} />
+              )}
             </View>
-            <Pressable onPress={() => setIsFullscreen(!isFullscreen)} style={styles.uiCircleBtn}>
+
+            <Text style={{ color: "#fff", fontSize: 11, minWidth: 35, textAlign: "right" }}>
+              {formatTime(totalTime)}
+            </Text>
+
+            <Pressable
+              onPress={() => {
+                if (isFullscreen) exitFullscreen();
+                else enterFullscreen();
+              }}
+              style={styles.uiCircleBtn}
+            >
               <Ionicons name={isFullscreen ? "contract" : "expand"} size={22} color="#fff" />
             </Pressable>
           </View>
@@ -444,24 +682,55 @@ function VlcPlayer({
           {showSettings && (
             <View style={styles.settingsModal}>
               <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Ses / Altyazi Ayarlari</Text>
+                <Text style={styles.modalTitle}>
+                  {settingsTab === "audio" ? "Ses Secimi" : "Altyazi Secimi"}
+                </Text>
                 <Pressable onPress={() => setShowSettings(false)}>
                   <Ionicons name="close" size={22} color="#fff" />
                 </Pressable>
               </View>
               <FlatList
-                data={tracks}
-                keyExtractor={(item) => item.id.toString()}
+                data={settingsTab === "audio" ? audioTracks : subtitleTracks}
+                keyExtractor={(item) => `${settingsTab}-${item.id}`}
                 renderItem={({ item }) => (
-                  <Pressable 
-                    style={styles.trackItem}
+                  <Pressable
+                    style={[
+                      styles.trackItem,
+                      ((settingsTab === "audio" && selectedAudioId === item.id) ||
+                        (settingsTab === "subtitle" && selectedSubtitleId === item.id)) &&
+                        styles.trackItemActive,
+                    ]}
                     onPress={() => {
-                      vlcRef.current?.setAudioTrack?.(item.id);
+                      try {
+                        if (settingsTab === "audio") {
+                          vlcRef.current?.setAudioTrack?.(item.id);
+                          setSelectedAudioId(item.id);
+                        } else {
+                          vlcRef.current?.setSubtitleTrack?.(item.id);
+                          setSelectedSubtitleId(item.id);
+                        }
+                      } catch (e) {}
                       setShowSettings(false);
                     }}
                   >
-                    <Ionicons name="volume-high-outline" size={18} color="#fff" />
-                    <Text style={styles.trackText}>{item.name}</Text>
+                    <Ionicons
+                      name={settingsTab === "audio" ? "volume-high-outline" : "text-outline"}
+                      size={18}
+                      color={((settingsTab === "audio" && selectedAudioId === item.id) ||
+                        (settingsTab === "subtitle" && selectedSubtitleId === item.id)) ? "#000" : "#fff"}
+                    />
+                    <Text style={[
+                      styles.trackText,
+                      ((settingsTab === "audio" && selectedAudioId === item.id) ||
+                        (settingsTab === "subtitle" && selectedSubtitleId === item.id)) &&
+                        styles.trackTextActive,
+                    ]}>
+                      {item.name}
+                    </Text>
+                    {((settingsTab === "audio" && selectedAudioId === item.id) ||
+                      (settingsTab === "subtitle" && selectedSubtitleId === item.id)) && (
+                      <Ionicons name="checkmark" size={16} color="#000" />
+                    )}
                   </Pressable>
                 )}
               />
@@ -470,8 +739,16 @@ function VlcPlayer({
         </View>
       )}
 
-      {!ready && !hasError && (
+      {/* Yayın Donduğunda Çıkan Kurtarma Uyarısı kanka */}
+      {isRecovering && (
         <View style={styles.loadingOverlay}>
+          <ActivityIndicator color="#ff9f43" size="large" />
+          <Text style={{ color: "#ff9f43", marginTop: 8, fontWeight: 'bold' }}>Yayin Yenileniyor...</Text>
+        </View>
+      )}
+
+      {!ready && !hasError && !isRecovering && (
+        <View style={styles.loadingOverlay} pointerEvents="none">
           <ActivityIndicator color="#fff" size="large" />
           <Text style={{ color: "#aaa", marginTop: 8 }}>VLC Yukleniyor...</Text>
         </View>
@@ -499,7 +776,17 @@ const styles = StyleSheet.create({
     marginHorizontal: 12,
   },
   videoBox: { width: "100%", aspectRatio: 16 / 9, backgroundColor: "#000" },
-  videoBoxFullscreen: { width: "100%", height: "100%", aspectRatio: undefined },
+  videoBoxFullscreen: {
+    width: "100%",
+    height: "100%",
+    aspectRatio: undefined,
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 50,
+  },
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10 },
   err: { color: "red", textAlign: "center" },
   loading: { color: "#aaa" },
@@ -546,10 +833,11 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.4)",
     justifyContent: "space-between",
     padding: 15,
+    zIndex: 10,
   },
   vlcUiTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   vlcUiCenter: { flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 30 },
-  vlcUiBottom: { flexDirection: "row", alignItems: "center", gap: 15 },
+  vlcUiBottom: { flexDirection: "row", alignItems: "center", gap: 10, paddingBottom: 10 },
   uiCircleBtn: {
     width: 40,
     height: 40,
@@ -558,32 +846,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center"
   },
-  fakeProgressBar: {
-    flex: 1,
-    height: 4,
-    backgroundColor: "rgba(255,255,255,0.3)",
-    borderRadius: 2,
-    justifyContent: "center"
-  },
-  fakeProgressFill: {
-    height: "100%",
-    backgroundColor: "#ff9f43",
-    borderRadius: 2
-  },
-  settingsModal: {
-    position: "absolute",
-    right: 15,
-    top: 65,
-    width: 220,
-    backgroundColor: "rgba(26, 26, 26, 0.95)",
-    borderRadius: 8,
-    padding: 10,
-    borderWidth: 1,
-    borderColor: "#444",
-    zIndex: 999
-  },
+  progressBarContainer: { flex: 1, height: 30, justifyContent: "center", marginHorizontal: 5 },
+  progressBarTrack: { height: 5, backgroundColor: "rgba(255,255,255,0.3)", borderRadius: 3, overflow: "hidden" },
+  progressBarFill: { height: "100%", backgroundColor: "#ff9f43", borderRadius: 3 },
+  progressHandle: { position: "absolute", width: 14, height: 14, borderRadius: 7, backgroundColor: "#ff9f43", top: 8, marginLeft: -7, borderWidth: 2, borderColor: "#fff" },
+  settingsModal: { position: "absolute", right: 15, top: 65, width: 240, maxHeight: 250, backgroundColor: "rgba(26, 26, 26, 0.96)", borderRadius: 10, padding: 10, borderWidth: 1, borderColor: "#444", zIndex: 999 },
   modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10, borderBottomWidth: 1, borderBottomColor: "#333", paddingBottom: 5 },
-  modalTitle: { color: "#fff", fontSize: 12, fontWeight: "700" },
-  trackItem: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 8, paddingHorizontal: 4 },
-  trackText: { color: "#fff", fontSize: 13 }
+  modalTitle: { color: "#fff", fontSize: 13, fontWeight: "700" },
+  trackItem: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 10, paddingHorizontal: 6, borderRadius: 6 },
+  trackItemActive: { backgroundColor: "#ff9f43" },
+  trackText: { color: "#fff", fontSize: 13, flex: 1 },
+  trackTextActive: { color: "#000", fontWeight: "700" },
 });
