@@ -6,11 +6,29 @@ import {
   Pressable,
   ActivityIndicator,
   StatusBar,
-  Dimensions,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api";
+
+// ============================================================
+// HYBRID PLAYER - Gemini UI + Saglam Koruma Mekanizmalari
+//
+// UI Ozellikler (Gemini'den):
+// - Oynatici secim butonlari (Expo Video / VLC)
+// - Tam ekran (Fullscreen) destegi
+// - Custom VLC UI (Netflix tarzi kontroller)
+// - Play/Pause, Ileri/Geri
+// - 3sn otomatik gizlenen kontroller
+// - Cark ikonu (ayarlar)
+//
+// Koruma Mekanizmalari (Bizden + Diger YZ):
+// - isSuccessfullyPlaying: Gorsel geldikten sonra anlik hatalari yok say
+// - errorIgnoreTimeoutRef: onStopped'da 2sn tolerans (VLC drop kurtarma)
+// - nativeErrorDelayRef: 600ms tolerans (asenkron hata yarisi)
+// - Timeout: ExpoVideo 6sn / VLC 12sn
+// - URL degisiminde mode reset
+// ============================================================
 
 let expoVideoPkg: any = null;
 try { expoVideoPkg = require("expo-video"); } catch (e) {}
@@ -29,8 +47,6 @@ export default function Player() {
   const [error, setError] = useState<string | null>(null);
   const [fav, setFav] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  
-  // Alt kısımda elinle seçeceğin oynatıcı modu
   const [selectedMode, setSelectedMode] = useState<PlayerMode>(
     expoVideoPkg ? "expo-video" : "vlc"
   );
@@ -49,9 +65,7 @@ export default function Player() {
         setActiveIdx(0);
         setError(null);
       } catch (e: any) {
-        if (isMounted) {
-          setError(e?.message || "Yayin yuklenemedi");
-        }
+        if (isMounted) setError(e?.message || "Yayin yuklenemedi");
       }
     })();
     return () => { isMounted = false; };
@@ -78,26 +92,18 @@ export default function Player() {
     <View style={styles.root}>
       <StatusBar barStyle="light-content" hidden={true} />
 
-      {/* Tam ekrandayken üst barı gizle kanka */}
       {!isFullscreen && (
         <View style={styles.head}>
           <Pressable onPress={() => router.back()}>
             <Ionicons name="chevron-back" size={28} color="#fff" />
           </Pressable>
-          <Text style={styles.title} numberOfLines={1}>
-            {name || "Kanal"}
-          </Text>
+          <Text style={styles.title} numberOfLines={1}>{name || "Kanal"}</Text>
           <Pressable onPress={toggleFav}>
-            <Ionicons
-              name={fav ? "heart" : "heart-outline"}
-              size={26}
-              color={fav ? "#ff4d4d" : "#fff"}
-            />
+            <Ionicons name={fav ? "heart" : "heart-outline"} size={26} color={fav ? "#ff4d4d" : "#fff"} />
           </Pressable>
         </View>
       )}
 
-      {/* Video Alanı (Tam ekransa tüm ekranı kaplar) */}
       <View style={[styles.videoBox, isFullscreen && styles.videoBoxFullscreen]}>
         {error ? (
           <View style={styles.center}>
@@ -121,14 +127,12 @@ export default function Player() {
         )}
       </View>
 
-      {/* Alt Kontrol ve Seçenek Paneli (Tam ekrandayken gizlenir) */}
       {!isFullscreen && (
         <View style={styles.infoBox}>
           <Text style={styles.infoTitle}>{name}</Text>
           <Text style={styles.infoSub}>Canli Yayin</Text>
 
-          {/* İstediğin o alt seçenek butonları müdür */}
-          <Text style={styles.sectionTitle}>Oynatici Motoru Seç:</Text>
+          <Text style={styles.sectionTitle}>Oynatici Motoru Sec:</Text>
           <View style={styles.modeSelector}>
             {expoVideoPkg && (
               <Pressable
@@ -136,9 +140,7 @@ export default function Player() {
                 style={[styles.modeBtn, selectedMode === "expo-video" && styles.modeBtnActive]}
               >
                 <Ionicons name="flash" size={16} color={selectedMode === "expo-video" ? "#000" : "#fff"} />
-                <Text style={[styles.modeBtnText, selectedMode === "expo-video" && styles.modeBtnTextActive]}>
-                  Expo Video
-                </Text>
+                <Text style={[styles.modeBtnText, selectedMode === "expo-video" && styles.modeBtnTextActive]}>Expo Video</Text>
               </Pressable>
             )}
             {vlcPlayerPkg && (
@@ -147,9 +149,7 @@ export default function Player() {
                 style={[styles.modeBtn, selectedMode === "vlc" && styles.modeBtnActive]}
               >
                 <Ionicons name="logo-playstation" size={16} color={selectedMode === "vlc" ? "#000" : "#fff"} />
-                <Text style={[styles.modeBtnText, selectedMode === "vlc" && styles.modeBtnTextActive]}>
-                  VLC Player
-                </Text>
+                <Text style={[styles.modeBtnText, selectedMode === "vlc" && styles.modeBtnTextActive]}>VLC Player</Text>
               </Pressable>
             )}
           </View>
@@ -157,9 +157,7 @@ export default function Player() {
           {urls && urls.length > 1 && (
             <Pressable onPress={tryNext} style={styles.altBtn}>
               <Ionicons name="swap-horizontal" size={16} color="#000" />
-              <Text style={styles.altText}>
-                Yedek yayina gec ({activeIdx + 1}/{urls.length})
-              </Text>
+              <Text style={styles.altText}>Yedek yayina gec ({activeIdx + 1}/{urls.length})</Text>
             </Pressable>
           )}
         </View>
@@ -181,6 +179,9 @@ function PlayerInner({
   isFullscreen: boolean;
   setIsFullscreen: (v: boolean) => void;
 }) {
+  // URL degistiginde mode'u resetle (ama selectedMode disaridan geldigi icin burada resetlemiyoruz)
+  // selectedMode disaridan geldigi icin kullanici manuel degistirebilir
+
   if (mode === "expo-video" && expoVideoPkg) {
     return <ExpoVideoPlayer url={url} onError={onTryNext} />;
   }
@@ -204,8 +205,16 @@ function PlayerInner({
   );
 }
 
+// ============================================================
+// EXPO-VIDEO - KORUMALI
+// ============================================================
 function ExpoVideoPlayer({ url, onError }: { url: string; onError: () => void }) {
   const [ready, setReady] = useState(false);
+  const [hasError, setHasError] = useState(false);
+  const isFailedTriggered = useRef(false);
+  const readyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isSuccessfullyPlaying = useRef(false);
+
   const useVideoPlayer = expoVideoPkg.useVideoPlayer;
   const VideoView = expoVideoPkg.VideoView;
 
@@ -214,25 +223,70 @@ function ExpoVideoPlayer({ url, onError }: { url: string; onError: () => void })
   }, [url]);
 
   const player = useVideoPlayer(finalLiveUrl, (p: any) => {
+    p.loop = false;
+    p.muted = false;
     p.play();
   });
 
   useEffect(() => {
+    setReady(false);
+    setHasError(false);
+    isFailedTriggered.current = false;
+    isSuccessfullyPlaying.current = false;
+
+    if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
+
     const sub = player.addListener("statusChange", (event: any) => {
-      if ((event?.status || player.status) === "readyToPlay") setReady(true);
-      if ((event?.status || player.status) === "error") onError();
+      const status = event?.status || player.status;
+      const err = event?.error || player.error;
+
+      if (status === "readyToPlay") {
+        setReady(true);
+        isSuccessfullyPlaying.current = true;
+        if (readyTimerRef.current) { clearTimeout(readyTimerRef.current); readyTimerRef.current = null; }
+      }
+
+      if (status === "error" || err) {
+        if (isSuccessfullyPlaying.current) {
+          console.log("[ExpoVideo] Video zaten oynatiliyor, anlik hata yoksayildi.");
+          return;
+        }
+        setHasError(true);
+        if (!isFailedTriggered.current) {
+          isFailedTriggered.current = true;
+          onError();
+        }
+      }
     });
-    return () => { if (sub) sub.remove(); };
-  }, [player, onError]);
+
+    readyTimerRef.current = setTimeout(() => {
+      if (!ready && !hasError && !isFailedTriggered.current && !isSuccessfullyPlaying.current) {
+        isFailedTriggered.current = true;
+        onError();
+      }
+    }, 6000);
+
+    return () => {
+      if (sub && typeof sub.remove === "function") sub.remove();
+      if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
+    };
+  }, [url, onError]);
 
   return (
     <View style={{ flex: 1 }}>
       <VideoView style={{ flex: 1 }} player={player} contentFit="contain" nativeControls={true} allowsFullscreen={true} />
-      {!ready && <View style={styles.loadingOverlay}><ActivityIndicator color="#fff" size="large" /></View>}
+      {!ready && !hasError && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator color="#fff" size="large" />
+        </View>
+      )}
     </View>
   );
 }
 
+// ============================================================
+// VLC PLAYER - CELIK ZIRHLI + CUSTOM UI
+// ============================================================
 function VlcPlayer({
   url,
   onError,
@@ -247,30 +301,77 @@ function VlcPlayer({
   const [ready, setReady] = useState(false);
   const [paused, setPaused] = useState(false);
   const [showControls, setShowControls] = useState(true);
+  const [hasError, setHasError] = useState(false);
+
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const readyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const errorIgnoreTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const nativeErrorDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const isSuccessfullyPlaying = useRef(false);
+  const isFailedTriggered = useRef(false);
 
   const VLCPlayer = vlcPlayerPkg.VLCPlayer;
 
-  // Ekrana dokununca kontrolleri açıp 3 saniye sonra kapatan Netflix mantığı müdür
   const triggerControls = () => {
     setShowControls(true);
     if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
-    controlsTimeoutRef.current = setTimeout(() => {
-      setShowControls(false);
-    }, 3000);
+    controlsTimeoutRef.current = setTimeout(() => setShowControls(false), 3000);
   };
 
+  const handleError = useCallback((e: any) => {
+    if (nativeErrorDelayRef.current) clearTimeout(nativeErrorDelayRef.current);
+    nativeErrorDelayRef.current = setTimeout(() => {
+      if (isSuccessfullyPlaying.current) {
+        console.log("[VLC] Video zaten oynatiliyor, anlik hata yoksayildi.");
+        return;
+      }
+      setHasError(true);
+      if (!isFailedTriggered.current) {
+        isFailedTriggered.current = true;
+        onError();
+      }
+    }, 600);
+  }, [onError]);
+
   useEffect(() => {
+    setReady(false);
+    setHasError(false);
+    isFailedTriggered.current = false;
+    isSuccessfullyPlaying.current = false;
+
+    if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
+    if (errorIgnoreTimeoutRef.current) clearTimeout(errorIgnoreTimeoutRef.current);
+    if (nativeErrorDelayRef.current) clearTimeout(nativeErrorDelayRef.current);
+
     triggerControls();
-    return () => { if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current); };
-  }, []);
+
+    readyTimerRef.current = setTimeout(() => {
+      if (!ready && !hasError && !isFailedTriggered.current && !isSuccessfullyPlaying.current) {
+        isFailedTriggered.current = true;
+        onError();
+      }
+    }, 12000);
+
+    return () => {
+      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+      if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
+      if (errorIgnoreTimeoutRef.current) clearTimeout(errorIgnoreTimeoutRef.current);
+      if (nativeErrorDelayRef.current) clearTimeout(nativeErrorDelayRef.current);
+    };
+  }, [url, onError]);
 
   return (
     <Pressable style={{ flex: 1 }} onPress={triggerControls}>
       <VLCPlayer
         source={{
           uri: url,
-          initOptions: ["--network-caching=5000", "--live-caching=5000", "--codec=avcodec,all"],
+          initOptions: [
+            "--network-caching=2000",
+            "--live-caching=2000",
+            "--file-caching=2000",
+            "--codec=avcodec,all",
+          ],
         }}
         autoplay={true}
         paused={paused}
@@ -278,18 +379,31 @@ function VlcPlayer({
         videoAspectRatio="16:9"
         resizeMode="contain"
         style={{ flex: 1 }}
-        onPlaying={() => setReady(true)}
-        onBuffering={(e: any) => { if (e?.isBuffering === 0) setReady(true); }}
-        onError={onError}
+        onPlaying={() => {
+          setReady(true);
+          isSuccessfullyPlaying.current = true;
+          if (readyTimerRef.current) { clearTimeout(readyTimerRef.current); readyTimerRef.current = null; }
+        }}
+        onBuffering={(e: any) => {
+          if (e?.isBuffering === 0) {
+            setReady(true);
+            isSuccessfullyPlaying.current = true;
+            if (readyTimerRef.current) { clearTimeout(readyTimerRef.current); readyTimerRef.current = null; }
+          }
+        }}
+        onError={handleError}
+        onStopped={() => {
+          if (errorIgnoreTimeoutRef.current) clearTimeout(errorIgnoreTimeoutRef.current);
+          errorIgnoreTimeoutRef.current = setTimeout(() => {
+            setReady(false);
+            isSuccessfullyPlaying.current = false;
+          }, 2000);
+        }}
       />
 
-      {/* ============================================================
-          MÜDÜRÜN İSTEDİĞİ O PREMIUM TAM EKRAN KONTROL KATMANI (CUSTOM UI)
-         ============================================================ */}
+      {/* CUSTOM VLC UI OVERLAY */}
       {ready && showControls && (
         <View style={styles.vlcUiOverlay}>
-          
-          {/* Üst Kısım: Çark İkonu (Ayarlar) */}
           <View style={styles.vlcUiTop}>
             <View />
             <Pressable onPress={() => alert("Ses ve Altyazi Ayarlari")} style={styles.uiCircleBtn}>
@@ -297,36 +411,30 @@ function VlcPlayer({
             </Pressable>
           </View>
 
-          {/* Orta Kısım: İleri - Geri ve Play/Pause Tuşları */}
           <View style={styles.vlcUiCenter}>
             <Pressable onPress={() => alert("10 Saniye Geri")} style={styles.uiCircleBtn}>
               <Ionicons name="play-back" size={24} color="#fff" />
             </Pressable>
-            
             <Pressable onPress={() => setPaused(!paused)} style={[styles.uiCircleBtn, { width: 60, height: 60, borderRadius: 30 }]}>
               <Ionicons name={paused ? "play" : "pause"} size={32} color="#fff" />
             </Pressable>
-
-            <Pressable onPress={() => alert("10 Saniye İleri")} style={styles.uiCircleBtn}>
+            <Pressable onPress={() => alert("10 Saniye Ileri")} style={styles.uiCircleBtn}>
               <Ionicons name="play-forward" size={24} color="#fff" />
             </Pressable>
           </View>
 
-          {/* Alt Kısım: Sarma Çubuğu (Taklit) ve Tam Ekran Butonu */}
           <View style={styles.vlcUiBottom}>
             <View style={styles.fakeProgressBar}>
               <View style={styles.fakeProgressFill} />
             </View>
-            
             <Pressable onPress={() => setIsFullscreen(!isFullscreen)} style={styles.uiCircleBtn}>
               <Ionicons name={isFullscreen ? "contract" : "expand"} size={22} color="#fff" />
             </Pressable>
           </View>
-
         </View>
       )}
 
-      {!ready && (
+      {!ready && !hasError && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator color="#fff" size="large" />
           <Text style={{ color: "#aaa", marginTop: 8 }}>VLC Yukleniyor...</Text>
@@ -396,8 +504,8 @@ const styles = StyleSheet.create({
     justifyContent: "center"
   },
   altText: { color: "#000", fontWeight: "700" },
-  
-  // Custom VLC UI Katmanları
+
+  // Custom VLC UI
   vlcUiOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(0,0,0,0.4)",
@@ -423,7 +531,7 @@ const styles = StyleSheet.create({
     justifyContent: "center"
   },
   fakeProgressFill: {
-    width: "35%", // Canlı yayın için temsil çubuğu
+    width: "35%",
     height: "100%",
     backgroundColor: "#ff9f43",
     borderRadius: 2
