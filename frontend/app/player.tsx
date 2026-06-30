@@ -12,11 +12,12 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api";
 
 // ============================================================
-// 2'LI OYNATICI FALLBACK SISTEMI (BIRLESTIRILMIS)
+// 2'LI OYNATICI FALLBACK SISTEMI (FINAL - TUM KORUMALAR)
 // 1. expo-video (modern) -> 2. VLC (son kurtarici)
 // Koruma mekanizmalari:
 // - hasSwitched: Bir URL icinde sadece 1 kez mod degisimi
 // - isSuccessfullyPlaying: Gorsel geldikten sonra anlik hatalari yok say
+// - errorIgnoreTimeoutRef: onStopped'da 2sn tolerans (VLC drop kurtarma)
 // - Timeout: Asiri uzun yuklenme durumunda hata ver
 // ============================================================
 
@@ -242,7 +243,6 @@ function ExpoVideoPlayer({
   const [hasError, setHasError] = useState(false);
   const isFailedTriggered = useRef(false);
   const readyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Gorsel geldikten sonra anlik hatalari yok sayan koruma kilidi:
   const isSuccessfullyPlaying = useRef(false);
 
   const useVideoPlayer = expoVideoPkg.useVideoPlayer;
@@ -276,7 +276,7 @@ function ExpoVideoPlayer({
 
       if (currentStatus === "readyToPlay") {
         setReady(true);
-        isSuccessfullyPlaying.current = true; // Gorsel geldi, kilidi devreye sok!
+        isSuccessfullyPlaying.current = true;
         if (readyTimerRef.current) {
           clearTimeout(readyTimerRef.current);
           readyTimerRef.current = null;
@@ -284,7 +284,6 @@ function ExpoVideoPlayer({
       }
 
       if (currentStatus === "error" || currentError) {
-        // Eger gorsel zaten gelmisse anlik hatalari yok say
         if (isSuccessfullyPlaying.current) {
           console.log("[ExpoVideo] Video zaten oynatiliyor, anlik dalgalanma hatasi yoksayildi.");
           return;
@@ -341,7 +340,7 @@ function ExpoVideoPlayer({
 }
 
 // ============================================================
-// 2. VLC PLAYER (Son Kurtarici) - GUNCELLENMIS VE KORUMALI
+// 2. VLC PLAYER (Son Kurtarici) - CELIK ZIRHLI VE KORUMALI
 // ============================================================
 function VlcPlayer({
   url,
@@ -354,6 +353,8 @@ function VlcPlayer({
   const [hasError, setHasError] = useState(false);
   const isFailedTriggered = useRef(false);
   const readyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const errorIgnoreTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Gorsel geldikten sonra anlik hatalarin yedege gecmesini engelleyen koruma kilidi:
   const isSuccessfullyPlaying = useRef(false);
 
@@ -361,7 +362,7 @@ function VlcPlayer({
 
   const handleError = useCallback(
     (e: any) => {
-      // EGer video oynatiliyorsa anlik hatalari sil, yedege gecme!
+      // Eger video zaten oynamaya basladiysa kesinlikle yedege gecme, akisi koru!
       if (isSuccessfullyPlaying.current) {
         console.log("[VLC] Video zaten oynatiliyor, anlik dalgalanma hatasi yoksayildi.");
         return;
@@ -370,8 +371,7 @@ function VlcPlayer({
       setHasError(true);
       if (!isFailedTriggered.current) {
         isFailedTriggered.current = true;
-        const msg =
-          e?.error?.message || e?.error || "VLC oynatici hatasi";
+        const msg = e?.error?.message || e?.error || "VLC oynatici hatasi";
         onError(String(msg));
       }
     },
@@ -382,13 +382,12 @@ function VlcPlayer({
     setReady(false);
     setHasError(false);
     isFailedTriggered.current = false;
-    isSuccessfullyPlaying.current = false; // Her yeni URL'de kilidi sifirla
+    isSuccessfullyPlaying.current = false;
 
-    if (readyTimerRef.current) {
-      clearTimeout(readyTimerRef.current);
-    }
+    if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
+    if (errorIgnoreTimeoutRef.current) clearTimeout(errorIgnoreTimeoutRef.current);
 
-    // 15 saniye timeout VLC icin (VLC biraz hantal yuklenebilir, sureyi rahatlattik)
+    // 15 saniye timeout VLC icin
     readyTimerRef.current = setTimeout(() => {
       if (!ready && !hasError && !isFailedTriggered.current && !isSuccessfullyPlaying.current) {
         isFailedTriggered.current = true;
@@ -397,9 +396,8 @@ function VlcPlayer({
     }, 15000);
 
     return () => {
-      if (readyTimerRef.current) {
-        clearTimeout(readyTimerRef.current);
-      }
+      if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
+      if (errorIgnoreTimeoutRef.current) clearTimeout(errorIgnoreTimeoutRef.current);
     };
   }, [url, onError]);
 
@@ -410,9 +408,9 @@ function VlcPlayer({
           uri: url,
           initType: 1,
           initOptions: [
-            "--network-caching=1000", // Buffer suresini biraz artirip akisi rahatlattik
-            "--live-caching=1000",
-            "--file-caching=1000",
+            "--network-caching=2000", // Caching suresini 2 saniyeye cikardik, anlik kopmalari onler
+            "--live-caching=2000",
+            "--file-caching=2000",
             "--codec=avcodec,all",
           ],
         }}
@@ -425,7 +423,7 @@ function VlcPlayer({
         onBuffering={(e: any) => {
           if (e?.isBuffering === 0) {
             setReady(true);
-            isSuccessfullyPlaying.current = true; // Yuklenme bitti, kilidi devreye sok!
+            isSuccessfullyPlaying.current = true; // Gorsel sinyali alindi, kilitle!
             if (readyTimerRef.current) {
               clearTimeout(readyTimerRef.current);
               readyTimerRef.current = null;
@@ -434,15 +432,23 @@ function VlcPlayer({
         }}
         onPlaying={() => {
           setReady(true);
-          isSuccessfullyPlaying.current = true; // Gorsel geldi, yedege kacisi muhurle!
+          isSuccessfullyPlaying.current = true; // Gorsel ekrana oturdu, kilitle!
           if (readyTimerRef.current) {
             clearTimeout(readyTimerRef.current);
             readyTimerRef.current = null;
           }
         }}
         onStopped={() => {
-          setReady(false);
-          isSuccessfullyPlaying.current = false;
+          // ONEMLI: Anlik donmalarda kilidi hemen acmiyoruz!
+          // Yayina kendini toparlamasi icin 2 saniye sans veriyoruz.
+          if (errorIgnoreTimeoutRef.current) clearTimeout(errorIgnoreTimeoutRef.current);
+
+          errorIgnoreTimeoutRef.current = setTimeout(() => {
+            if (!ready) {
+              setReady(false);
+              isSuccessfullyPlaying.current = false; // 2 saniye boyunca sinyal gelmediyse kilidi ac
+            }
+          }, 2000);
         }}
       />
       {!ready && !hasError && (
