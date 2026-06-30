@@ -15,6 +15,10 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api";
 
+// TV'ye yansıtma kütüphanesini güvenli şekilde bağlıyoruz kanka
+let GoogleCastPkg: any = null;
+try { GoogleCastPkg = require("react-native-google-cast").default; } catch (e) {}
+
 let expoVideoPkg: any = null;
 try { expoVideoPkg = require("expo-video"); } catch (e) {}
 
@@ -126,6 +130,7 @@ export default function Player() {
             onTryNext={tryNext}
             isFullscreen={isFullscreen}
             setIsFullscreen={setIsFullscreen}
+            title={name || "Canli Yayin"}
           />
         )}
       </View>
@@ -175,15 +180,25 @@ function PlayerInner({
   onTryNext,
   isFullscreen,
   setIsFullscreen,
+  title,
 }: {
   url: string;
   mode: PlayerMode;
   onTryNext: () => void;
   isFullscreen: boolean;
   setIsFullscreen: (v: boolean) => void;
+  title: string;
 }) {
   if (mode === "expo-video" && expoVideoPkg) {
-    return <ExpoVideoPlayer url={url} onError={onTryNext} />;
+    return (
+      <ExpoVideoPlayer 
+        url={url} 
+        onError={onTryNext} 
+        isFullscreen={isFullscreen} 
+        setIsFullscreen={setIsFullscreen} 
+        title={title}
+      />
+    );
   }
 
   if (mode === "vlc" && vlcPlayerPkg) {
@@ -193,6 +208,7 @@ function PlayerInner({
         onError={onTryNext}
         isFullscreen={isFullscreen}
         setIsFullscreen={setIsFullscreen}
+        title={title}
       />
     );
   }
@@ -205,12 +221,27 @@ function PlayerInner({
   );
 }
 
-function ExpoVideoPlayer({ url, onError }: { url: string; onError: () => void }) {
+function ExpoVideoPlayer({ 
+  url, 
+  onError,
+  isFullscreen,
+  setIsFullscreen,
+  title,
+}: { 
+  url: string; 
+  onError: () => void;
+  isFullscreen: boolean;
+  setIsFullscreen: (v: boolean) => void;
+  title: string;
+}) {
   const [ready, setReady] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const [showControls, setShowControls] = useState(true);
+  
   const isFailedTriggered = useRef(false);
   const readyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isSuccessfullyPlaying = useRef(false);
   const statusSubRef = useRef<any>(null);
 
@@ -230,6 +261,46 @@ function ExpoVideoPlayer({ url, onError }: { url: string; onError: () => void })
     p.play();
   });
 
+  const triggerControls = useCallback(() => {
+    setShowControls(true);
+    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    controlsTimeoutRef.current = setTimeout(() => {
+      setShowControls(false);
+    }, 4000);
+  }, []);
+
+  const toggleFullscreen = async () => {
+    if (!player) return;
+    try {
+      if (isFullscreen) {
+        setIsFullscreen(false);
+        if (ScreenOrientation) {
+          await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+        }
+      } else {
+        setIsFullscreen(true);
+        if (ScreenOrientation) {
+          await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+        }
+        player.presentFullscreen();
+      }
+    } catch (e) {}
+    triggerControls();
+  };
+
+  const handleCast = () => {
+    if (GoogleCastPkg) {
+      try {
+        GoogleCastPkg.getCastContext().presentCastDialog();
+        GoogleCastPkg.getCastSessionManager().startSession();
+        // TV bağlandığında akışı TV'ye pasla kanka
+        GoogleCastPkg.getCastContext().setRemoteMediaClient({
+          mediaInfo: { contentUrl: url, metadata: { title: title, mediaType: 'movie' } }
+        });
+      } catch (e) {}
+    }
+  };
+
   useEffect(() => {
     setReady(false);
     setHasError(false);
@@ -238,6 +309,7 @@ function ExpoVideoPlayer({ url, onError }: { url: string; onError: () => void })
 
     if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
     if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
+    triggerControls();
 
     const checkStatus = (status?: string, err?: any) => {
       const s = status ?? player?.status;
@@ -250,7 +322,6 @@ function ExpoVideoPlayer({ url, onError }: { url: string; onError: () => void })
         if (stallTimerRef.current) { clearTimeout(stallTimerRef.current); stallTimerRef.current = null; }
       }
 
-      // Stall Detection: Yayın başladıktan sonra donarsa otomatik tetikle kanka
       if (isSuccessfullyPlaying.current && s !== "playing" && s !== "readyToPlay") {
         if (!stallTimerRef.current) {
           stallTimerRef.current = setTimeout(() => {
@@ -298,25 +369,50 @@ function ExpoVideoPlayer({ url, onError }: { url: string; onError: () => void })
       }
       if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
       if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
+      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
     };
-  }, [url, onError]);
+  }, [url, onError, player, triggerControls]);
 
   return (
-    <View style={{ flex: 1 }}>
+    <Pressable style={{ flex: 1 }} onPress={triggerControls}>
       <VideoView
         style={{ flex: 1 }}
         player={player}
         contentFit="cover"
-        nativeControls={true}
+        nativeControls={false}
         allowsFullscreen={false}
       />
+      
+      {ready && showControls && (
+        <View style={styles.vlcUiOverlay} pointerEvents="box-none">
+          {/* Üst Bar: Yansıtma tuşu buraya geldi müdür */}
+          <View style={[styles.vlcUiTop, { justifyContent: 'flex-end' }]} pointerEvents="box-none">
+            <Pressable onPress={handleCast} style={styles.uiCircleBtn}>
+              <Ionicons name="tv-outline" size={20} color="#fff" />
+            </Pressable>
+          </View>
+          
+          <View style={styles.vlcUiCenter} pointerEvents="box-none">
+            <Pressable onPress={() => { player?.isPlaying ? player?.pause() : player?.play(); triggerControls(); }} style={[styles.uiCircleBtn, { width: 60, height: 60, borderRadius: 30 }]}>
+              <Ionicons name={player?.isPlaying ? "pause" : "play"} size={32} color="#fff" />
+            </Pressable>
+          </View>
+
+          <View style={[styles.vlcUiBottom, { justifyContent: 'flex-end' }]} pointerEvents="box-none">
+            <Pressable onPress={toggleFullscreen} style={styles.uiCircleBtn}>
+              <Ionicons name={isFullscreen ? "contract" : "expand"} size={22} color="#fff" />
+            </Pressable>
+          </View>
+        </View>
+      )}
+
       {!ready && !hasError && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator color="#fff" size="large" />
           <Text style={{ color: "#aaa", marginTop: 8 }}>Expo Video Yukleniyor...</Text>
         </View>
       )}
-    </View>
+    </Pressable>
   );
 }
 
@@ -325,11 +421,13 @@ function VlcPlayer({
   onError,
   isFullscreen,
   setIsFullscreen,
+  title,
 }: {
   url: string;
   onError: () => void;
   isFullscreen: boolean;
   setIsFullscreen: (v: boolean) => void;
+  title: string;
 }) {
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
@@ -410,6 +508,18 @@ function VlcPlayer({
       vlcRef.current.seekTo?.(target);
     } catch (e) {}
   }, [totalTime]);
+
+  const handleCast = () => {
+    if (GoogleCastPkg) {
+      try {
+        GoogleCastPkg.getCastContext().presentCastDialog();
+        GoogleCastPkg.getCastSessionManager().startSession();
+        GoogleCastPkg.getCastContext().setRemoteMediaClient({
+          mediaInfo: { contentUrl: url, metadata: { title: title, mediaType: 'movie' } }
+        });
+      } catch (e) {}
+    }
+  };
 
   const panResponder = useRef(
     PanResponder.create({
@@ -536,13 +646,13 @@ function VlcPlayer({
 
   const vlcInitOptions = useMemo(() => {
     return [
-      "--network-caching=6000", // CANLI YAYIN İÇİN EN İDEAL SÜRE: 6 saniye havuz kanka!
+      "--network-caching=6000",
       "--live-caching=6000",
       "--file-caching=6000",
       "--udp-caching=6000",
-      "--input-buffer-size=1048576", // 1MB Girdi Havuzu
-      "--http-reconnect",            // Bağlantı koparsa otomatik yeniden yakala müdür
-      "--http-keepalive",            // Hattı sürekli canlı tut
+      "--input-buffer-size=1048576",
+      "--http-reconnect",
+      "--http-keepalive",
       "--codec=all",
       "--no-drop-late-frames",
       "--skip-frames",
@@ -569,10 +679,14 @@ function VlcPlayer({
         style={{ flex: 1, width: "100%", height: "100%" }}
         onPlaying={() => {
           setReady(true);
-          setIsRecovering(false);
+          setIsRecovering(false); // Canlanınca yazıyı kapat müdür
           isSuccessfullyPlaying.current = true;
           if (readyTimerRef.current) { clearTimeout(readyTimerRef.current); readyTimerRef.current = null; }
-          if (recoveryTimerRef.current) { clearTimeout(recoveryTimerRef.current); recoveryTimerRef.current = null; }
+          
+          if (recoveryTimerRef.current) { 
+            clearTimeout(recoveryTimerRef.current); 
+            recoveryTimerRef.current = null; 
+          }
           setTimeout(fetchTracks, 1500);
         }}
         onBuffering={(e: any) => {
@@ -583,14 +697,15 @@ function VlcPlayer({
             if (readyTimerRef.current) { clearTimeout(readyTimerRef.current); readyTimerRef.current = null; }
             if (recoveryTimerRef.current) { clearTimeout(recoveryTimerRef.current); recoveryTimerRef.current = null; }
           } else {
-            // Akıllı Kurtarma Mekanizması: Eğer yayın akarken 4 saniyeden uzun donarsa sars kanka!
             if (isSuccessfullyPlaying.current && !recoveryTimerRef.current) {
               recoveryTimerRef.current = setTimeout(() => {
                 console.log("[VLC] Buffer tıkandı, akış yenileniyor...");
                 setIsRecovering(true);
                 try {
-                  vlcRef.current?.seekTo?.(currentTime + 1000); // Akışı 1 saniye ileri iterek canlandır müdür
+                  vlcRef.current?.seekTo?.(currentTime + 1000); 
                 } catch {}
+                
+                recoveryTimerRef.current = null;
               }, 4000);
             }
           }
@@ -604,6 +719,7 @@ function VlcPlayer({
           if (errorIgnoreTimeoutRef.current) clearTimeout(errorIgnoreTimeoutRef.current);
           errorIgnoreTimeoutRef.current = setTimeout(() => {
             setReady(false);
+            setIsRecovering(false);
             isSuccessfullyPlaying.current = false;
           }, 2000);
         }}
@@ -611,9 +727,13 @@ function VlcPlayer({
 
       {ready && showControls && (
         <View style={styles.vlcUiOverlay} pointerEvents="box-none">
+          {/* VLC için de üst sağ tarafa yansıtma butonunu gömdük kanka */}
           <View style={styles.vlcUiTop} pointerEvents="box-none">
             <View />
             <View style={{ flexDirection: "row", gap: 10 }}>
+              <Pressable onPress={handleCast} style={styles.uiCircleBtn}>
+                <Ionicons name="tv-outline" size={18} color="#fff" />
+              </Pressable>
               <Pressable
                 onPress={() => { setSettingsTab("audio"); setShowSettings(!showSettings); triggerControls(); }}
                 style={[styles.uiCircleBtn, showSettings && settingsTab === "audio" && { backgroundColor: "#ff9f43" }]}
@@ -739,7 +859,6 @@ function VlcPlayer({
         </View>
       )}
 
-      {/* Yayın Donduğunda Çıkan Kurtarma Uyarısı kanka */}
       {isRecovering && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator color="#ff9f43" size="large" />
