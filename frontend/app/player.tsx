@@ -15,16 +15,17 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api";
 
+// TV'ye yansıtma kütüphanesini güvenli şekilde bağlıyoruz kanka
 let CastButton: any = null;
 let useRemoteMediaClient: any = null;
 let useCastSession: any = null;
 let CastContext: any = null;
 try {
   const castPkg = require("react-native-google-cast");
-  CastButton = castPkg.CastButton;
+  CastButton        = castPkg.CastButton;
   useRemoteMediaClient = castPkg.useRemoteMediaClient;
-  useCastSession = castPkg.useCastSession;
-  CastContext = castPkg.CastContext;
+  useCastSession    = castPkg.useCastSession;
+  CastContext       = castPkg.CastContext;
 } catch (e) {}
 
 let expoVideoPkg: any = null;
@@ -40,7 +41,6 @@ let ScreenOrientation: any = null;
 try { ScreenOrientation = require("expo-screen-orientation"); } catch (e) {}
 
 type PlayerMode = "expo-video" | "exoplayer" | "vlc" | "vlc-ijk";
-type TrackItem = { id: number; name: string; type: "audio" | "subtitle" };
 
 function isM3U8(url: string): boolean {
   return /\.m3u8?/i.test(url) || url.includes("type=m3u") || url.includes("type=m3u_plus");
@@ -65,7 +65,8 @@ export default function Player() {
   const [error, setError] = useState<string | null>(null);
   const [fav, setFav] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-
+  
+  // Varsayılan: Google ExoPlayer > IJK > VLC > Expo Video
   const [selectedMode, setSelectedMode] = useState<PlayerMode>(() => {
     if (exoPlayerPkg) return "exoplayer";
     if (vlcPlayerPkg) return "vlc-ijk";
@@ -545,7 +546,7 @@ function ExoPlayerEngine({ url, onError, isFullscreen, setIsFullscreen, title }:
     <Pressable style={{ flex: 1 }} onPress={triggerControls}>
       <Video
         ref={videoRef}
-        source={{ uri: url, type: isM3U8(url) ? "m3u8" : undefined }}
+        source={{ uri: url }}
         style={{ flex: 1, width: "100%", height: "100%" }}
         resizeMode="contain"
         paused={paused}
@@ -654,8 +655,8 @@ function VlcPlayerComponent({ url, mode, onError, isFullscreen, setIsFullscreen,
 
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"audio" | "subtitle">("audio");
-  const [audioTracks, setAudioTracks] = useState<TrackItem[]>([]);
-  const [subtitleTracks, setSubtitleTracks] = useState<TrackItem[]>([]);
+  const [audioTracks, setAudioTracks] = useState<any[]>([]);
+  const [subtitleTracks, setSubtitleTracks] = useState<any[]>([]);
   const [selectedAudioId, setSelectedAudioId] = useState<number>(1);
   const [selectedSubtitleId, setSelectedSubtitleId] = useState<number>(-1);
 
@@ -980,7 +981,7 @@ const styles = StyleSheet.create({
   infoBox: { padding: 20 },
   infoTitle: { color: "#fff", fontSize: 20, fontWeight: "700" },
   infoSub: { color: "#ff9f43", marginTop: 4, fontSize: 12, fontWeight: "600" },
-  sectionTitle: { color: "#fff", fontSize: 14, fontWeight: "600", marginTop: 20, TrackItem, marginBottom: 10 },
+  sectionTitle: { color: "#fff", fontSize: 14, fontWeight: "600", marginTop: 20, marginBottom: 10 },
   modeSelector: { flexDirection: "row", gap: 6, marginBottom: 15, flexWrap: "wrap" },
   modeBtn: { flexBasis: "48%", flexGrow: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, padding: 12, backgroundColor: "#2a2a2a", borderRadius: 8, borderWidth: 1, borderColor: "#444" },
   modeBtnActive: { backgroundColor: "#ff9f43", borderColor: "#ff9f43" },
@@ -997,11 +998,11 @@ const styles = StyleSheet.create({
   vlcUiCenter: { flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 30 },
   vlcUiBottom: { flexDirection: "row", alignItems: "center", gap: 10, paddingBottom: 10 },
   uiCircleBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(0,0,0,0.7)", alignItems: "center", justifyContent: "center" },
-  progressBarContainer: { flex: 1, height: 30, justifyContent: "center" },
-  progressBarTrack: { height: 6, backgroundColor: "rgba(255,255,255,0.3)", borderRadius: 3, overflow: "hidden" },
-  progressBarFill: { height: "100%", backgroundColor: "#ff9f43" },
+  progressBarContainer: { flex: 1, height: 30, justifyContent: "center", marginHorizontal: 5 },
+  progressBarTrack: { height: 5, backgroundColor: "rgba(255,255,255,0.3)", borderRadius: 3, overflow: "hidden" },
+  progressBarFill: { height: "100%", backgroundColor: "#ff9f43", borderRadius: 3 },
   progressHandle: { position: "absolute", width: 14, height: 14, borderRadius: 7, backgroundColor: "#ff9f43", top: 8, marginLeft: -7, borderWidth: 2, borderColor: "#fff" },
-  settingsModal: { position: "absolute", right: 15, top: 65, width: 240, maxHeight: 250, backgroundColor: "rgba(26, 26, 26, 0.98)", borderRadius: 10, padding: 10, borderWidth: 1, borderColor: "#444", zIndex: 999 },
+  settingsModal: { position: "absolute", right: 15, top: 65, width: 240, maxHeight: 250, backgroundColor: "rgba(26, 26, 26, 0.96)", borderRadius: 10, padding: 10, borderWidth: 1, borderColor: "#444", zIndex: 999 },
   modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10, borderBottomWidth: 1, borderBottomColor: "#333", paddingBottom: 5 },
   modalTitle: { color: "#fff", fontSize: 13, fontWeight: "700" },
   trackItem: { flexDirection: "row", alignItems: "center", paddingVertical: 10, paddingHorizontal: 6, borderRadius: 6 },
