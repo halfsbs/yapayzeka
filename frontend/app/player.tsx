@@ -16,8 +16,18 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api";
 
 // TV'ye yansıtma kütüphanesini güvenli şekilde bağlıyoruz kanka
-let GoogleCastPkg: any = null;
-try { GoogleCastPkg = require("react-native-google-cast").default; } catch (e) {}
+// react-native-google-cast: named export'lar ile çalışır
+let CastButton: any = null;
+let useRemoteMediaClient: any = null;
+let useCastSession: any = null;
+let CastContext: any = null;
+try {
+  const castPkg = require("react-native-google-cast");
+  CastButton        = castPkg.CastButton;
+  useRemoteMediaClient = castPkg.useRemoteMediaClient;
+  useCastSession    = castPkg.useCastSession;
+  CastContext       = castPkg.CastContext;
+} catch (e) {}
 
 let expoVideoPkg: any = null;
 try { expoVideoPkg = require("expo-video"); } catch (e) {}
@@ -269,17 +279,37 @@ function ExpoVideoPlayer({
     }, 4000);
   }, []);
 
-  const handleCast = () => {
-    if (GoogleCastPkg) {
-      try {
-        GoogleCastPkg.getCastContext().presentCastDialog();
-        GoogleCastPkg.getCastSessionManager().startSession();
-        GoogleCastPkg.getCastContext().setRemoteMediaClient({
-          mediaInfo: { contentUrl: url, metadata: { title: title, mediaType: 'movie' } }
-        });
-      } catch (e) {}
-    }
-  };
+  // ── Cast ──────────────────────────────────────────────────────────
+  // useCastSession / useRemoteMediaClient hook'ları bileşen içinde
+  // koşullu çağrılamaz; bu yüzden her zaman çağırıp null kontrolü yapıyoruz.
+  const castSession    = useCastSession    ? useCastSession()    : null;
+  const remoteClient   = useRemoteMediaClient ? useRemoteMediaClient() : null;
+
+  const handleCast = useCallback(async () => {
+    // 1. Dialog'u aç — kullanıcı Chromecast/TV seçer
+    try { CastContext?.getSharedInstance().showCastDialog(); } catch {}
+
+    // 2. Aktif oturum yoksa burada dur; kullanıcı cihaz seçince
+    //    castSession değişecek ve medyayı loadMedia ile gönderebiliriz.
+    if (!castSession || !remoteClient) return;
+
+    // 3. Medyayı Chromecast'e yükle
+    try {
+      await remoteClient.loadMedia({
+        mediaInfo: {
+          contentUrl: url,
+          contentType: isM3U8(url) ? "application/x-mpegURL" : "video/mp4",
+          metadata: {
+            type: "movie",
+            title: title,
+          },
+          streamType: "LIVE",
+        },
+      });
+    } catch (e) { console.warn("[Cast] loadMedia error:", e); }
+  }, [castSession, remoteClient, url, title]);
+
+  const isCasting = !!castSession;
 
   useEffect(() => {
     setReady(false);
@@ -365,9 +395,18 @@ function ExpoVideoPlayer({
       {/* Yerel kontroller açıkken TV yansıtma butonunu sağ üste şık bir katman olarak yerleştiriyoruz kanka */}
       {ready && showCastControl && (
         <View style={styles.expoCastOverlay} pointerEvents="box-none">
-          <Pressable onPress={handleCast} style={[styles.uiCircleBtn, { marginTop: 10, marginRight: 10 }]}>
-            <Ionicons name="tv-outline" size={20} color="#fff" />
-          </Pressable>
+          {/* CastButton: react-native-google-cast'in hazır native butonu.
+              Cihaz bağlıyken otomatik bağlı ikonuna döner, dialog açar. */}
+          {CastButton ? (
+            <CastButton
+              style={{ width: 40, height: 40, tintColor: isCasting ? "#ff9f43" : "#fff", marginTop: 10, marginRight: 10 }}
+            />
+          ) : (
+            <Pressable onPress={handleCast} style={[styles.uiCircleBtn, { marginTop: 10, marginRight: 10 },
+              isCasting && { backgroundColor: "#ff9f43" }]}>
+              <Ionicons name={isCasting ? "tv" : "tv-outline"} size={20} color={isCasting ? "#000" : "#fff"} />
+            </Pressable>
+          )}
         </View>
       )}
 
@@ -474,17 +513,39 @@ function VlcPlayer({
     } catch (e) {}
   }, [totalTime]);
 
-  const handleCast = () => {
-    if (GoogleCastPkg) {
-      try {
-        GoogleCastPkg.getCastContext().presentCastDialog();
-        GoogleCastPkg.getCastSessionManager().startSession();
-        GoogleCastPkg.getCastContext().setRemoteMediaClient({
-          mediaInfo: { contentUrl: url, metadata: { title: title, mediaType: 'movie' } }
-        });
-      } catch (e) {}
+  // ── Cast ──────────────────────────────────────────────────────────
+  const castSession    = useCastSession    ? useCastSession()    : null;
+  const remoteClient   = useRemoteMediaClient ? useRemoteMediaClient() : null;
+
+  const handleCast = useCallback(async () => {
+    try { CastContext?.getSharedInstance().showCastDialog(); } catch {}
+    if (!castSession || !remoteClient) return;
+    try {
+      await remoteClient.loadMedia({
+        mediaInfo: {
+          contentUrl: url,
+          contentType: isM3U8(url) ? "application/x-mpegURL" : "video/mp4",
+          metadata: {
+            type: "movie",
+            title: title,
+          },
+          streamType: "LIVE",
+        },
+      });
+    } catch (e) { console.warn("[Cast] loadMedia error:", e); }
+  }, [castSession, remoteClient, url, title]);
+
+  const isCasting = !!castSession;
+
+  // Cast başlarsa VLC'yi duraklat, bitince devam et
+  useEffect(() => {
+    if (isCasting) {
+      setPaused(true);
+    } else {
+      // Cast oturumu kapandı — yerel oynatmaya dön
+      if (isSuccessfullyPlaying.current) setPaused(false);
     }
-  };
+  }, [isCasting]);
 
   const panResponder = useRef(
     PanResponder.create({
@@ -708,9 +769,16 @@ function VlcPlayer({
           <View style={styles.vlcUiTop} pointerEvents="box-none">
             <View />
             <View style={{ flexDirection: "row", gap: 10 }}>
-              <Pressable onPress={handleCast} style={styles.uiCircleBtn}>
-                <Ionicons name="tv-outline" size={18} color="#fff" />
-              </Pressable>
+              {CastButton ? (
+                <CastButton
+                  style={{ width: 40, height: 40, tintColor: isCasting ? "#ff9f43" : "#fff" }}
+                />
+              ) : (
+                <Pressable onPress={handleCast} style={[styles.uiCircleBtn,
+                  isCasting && { backgroundColor: "#ff9f43" }]}>
+                  <Ionicons name={isCasting ? "tv" : "tv-outline"} size={18} color={isCasting ? "#000" : "#fff"} />
+                </Pressable>
+              )}
               <Pressable
                 onPress={() => { setSettingsTab("audio"); setShowSettings(!showSettings); triggerControls(); }}
                 style={[styles.uiCircleBtn, showSettings && settingsTab === "audio" && { backgroundColor: "#ff9f43" }]}
