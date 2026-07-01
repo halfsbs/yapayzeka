@@ -876,8 +876,12 @@ async def get_settings(user: dict = Depends(get_current_user)):
 async def get_accessible_categories(user: dict) -> Optional[List[str]]:
     """
     Kullanıcının görebileceği kategori listesini döner.
-    None = tüm açık kategoriler (VIP veya admin).
+    None = kısıtlama yok (admin).
     Liste = sadece bu kategoriler görünür.
+
+    Normal kullanıcı için iki kaynak:
+      1. category_configs'de access="open" olan kategoriler
+      2. is_default=True kaynağından gelen tüm kategoriler (GitHub M3U gibi)
     """
     role = user.get("role", "user")
     if role == "admin":
@@ -885,7 +889,6 @@ async def get_accessible_categories(user: dict) -> Optional[List[str]]:
 
     # Tüm kategori config'lerini çek
     cat_configs = await db.category_configs.find({}, {"_id": 0}).to_list(2000)
-    config_map = {c["name"]: c for c in cat_configs}
 
     # Kullanıcı erişim hakları
     grant = await db.user_category_grants.find_one({"user_id": user["id"]}, {"_id": 0})
@@ -893,28 +896,45 @@ async def get_accessible_categories(user: dict) -> Optional[List[str]]:
     allowed_cats: set = set()
 
     if role == "vip" or is_vip_active(user):
-        # VIP kullanıcı: açık + vip kategoriler + atanan paketler/kategoriler
+        # VIP: open + vip kategoriler
         for c in cat_configs:
             if c.get("access", "open") in ("open", "vip"):
                 allowed_cats.add(c["name"])
-        # Henüz config'de olmayan (yeni gelen) kategoriler de açık say
-        # (bunları sync sonrası admin yapılandıracak)
     else:
-        # Normal kullanıcı: sadece "open" kategoriler
+        # Normal kullanıcı:
+        # A) category_configs'de açıkça "open" işaretlenenler
         for c in cat_configs:
             if c.get("access", "open") == "open":
                 allowed_cats.add(c["name"])
 
+        # B) default source (GitHub vb.) kanallarının kategorileri —
+        #    admin buraya link eklediğinde normal kullanıcılar görmeli.
+        #    category_configs'e hiç kaydedilmemiş olabilirler, bu yüzden
+        #    doğrudan o source_id'ye ait kanalların kategori listesini çekiyoruz.
+        default_src = await db.m3u_sources.find_one({"is_default": True}, {"_id": 0, "id": 1})
+        if default_src:
+            dsid = default_src["id"]
+            pipeline = [
+                {"$match": {"source_id": dsid, "hidden": {"$ne": True}}},
+                {"$project": {"cats": {"$cond": [
+                    {"$gt": [{"$size": {"$ifNull": ["$categories", []]}}, 0]},
+                    "$categories", ["$category"],
+                ]}}},
+                {"$unwind": "$cats"},
+                {"$group": {"_id": "$cats"}},
+            ]
+            ds_cats = await db.channels.aggregate(pipeline).to_list(2000)
+            for row in ds_cats:
+                if row["_id"]:
+                    allowed_cats.add(row["_id"])
+
     # Bireysel grant'lar (hem VIP hem normal için geçerli)
     if grant:
-        # Paket erişimleri
         for pkg_id in grant.get("package_ids", []):
             pkg = await db.vip_packages.find_one({"id": pkg_id}, {"_id": 0})
             if pkg and pkg.get("active"):
                 allowed_cats.update(pkg.get("categories", []))
-        # Bireysel ek kategoriler
         allowed_cats.update(grant.get("extra_categories", []))
-        # Superfav koleksiyonu varsa ona özel sanal kategori
         if grant.get("superfav_name"):
             allowed_cats.add(grant["superfav_name"])
 
@@ -1561,22 +1581,54 @@ async def admin_set_default_source(body: DefaultSourceUpdate, user: dict = Depen
     # Eğer bu kaynak DB'de yoksa otomatik M3U kaynağı olarak ekle/güncelle
     existing = await db.m3u_sources.find_one({"is_default": True})
     if existing:
+        src_doc = {**existing, "url_enc": fernet.encrypt(body.url.encode()).decode(), "name": body.name}
         await db.m3u_sources.update_one(
             {"id": existing["id"]},
-            {"$set": {"url_enc": fernet.encrypt(body.url.encode()).decode(), "name": body.name}},
+            {"$set": {"url_enc": src_doc["url_enc"], "name": body.name}},
         )
-        asyncio.create_task(sync_source({**existing, "url_enc": fernet.encrypt(body.url.encode()).decode()}))
     else:
         sid = str(uuid.uuid4())
-        new_src = {
+        src_doc = {
             "id": sid, "name": body.name,
             "url_enc": fernet.encrypt(body.url.encode()).decode(),
             "active": True, "last_synced": None, "channel_count": 0,
             "is_default": True,
             "created_at": datetime.now(timezone.utc),
         }
-        await db.m3u_sources.insert_one(new_src)
-        asyncio.create_task(sync_source(new_src))
+        await db.m3u_sources.insert_one(src_doc)
+
+    # Sync tamamlanınca kategorileri category_configs'e "open" olarak işaretle
+    # (admin sonradan istediğini vip/closed yapabilir)
+    async def _sync_and_register_cats(src: dict):
+        count = await sync_source(src)
+        if count > 0:
+            pipeline = [
+                {"$match": {"source_id": src["id"], "hidden": {"$ne": True}}},
+                {"$project": {"cats": {"$cond": [
+                    {"$gt": [{"$size": {"$ifNull": ["$categories", []]}}, 0]},
+                    "$categories", ["$category"],
+                ]}}},
+                {"$unwind": "$cats"},
+                {"$group": {"_id": "$cats"}},
+            ]
+            cats = await db.channels.aggregate(pipeline).to_list(2000)
+            from pymongo import UpdateOne
+            ops = []
+            for row in cats:
+                cname = row["_id"]
+                if not cname:
+                    continue
+                # Sadece henüz config'de yoksa ekle (admin değiştirdiyse dokunma)
+                ops.append(UpdateOne(
+                    {"name": cname},
+                    {"$setOnInsert": {"name": cname, "display_name": cname, "access": "open", "order": 999}},
+                    upsert=True,
+                ))
+            if ops:
+                await db.category_configs.bulk_write(ops)
+            logger.info(f"Default source sync done: {count} channels, {len(ops)} categories registered")
+
+    asyncio.create_task(_sync_and_register_cats(src_doc))
     return {"ok": True}
 
 
