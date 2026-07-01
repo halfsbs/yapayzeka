@@ -69,8 +69,17 @@
       ],
       "expo-secure-store",
       "expo-video",
+      "react-native-video",
       "./plugins/withVlcPlayer.js",
-      "expo-build-properties"
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 26
+          }
+        }
+      ],
+      "react-native-google-cast"
     ],
     "experiments": {
       "typedRoutes": true
@@ -80,6 +89,7 @@
       "eas": {
         "projectId": "63b6b447-8a79-42a6-9ebc-978a7daead77"
       }
-    }
+    },
+    "owner": "kazims"
   }
 }
