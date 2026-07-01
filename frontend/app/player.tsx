@@ -236,7 +236,7 @@ function ExpoVideoPlayer({
 }) {
   const [ready, setReady] = useState(false);
   const [hasError, setHasError] = useState(false);
-  const [showControls, setShowControls] = useState(true);
+  const [showCastControl, setShowCastControl] = useState(true);
   
   const isFailedTriggered = useRef(false);
   const readyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -261,32 +261,13 @@ function ExpoVideoPlayer({
     p.play();
   });
 
-  const triggerControls = useCallback(() => {
-    setShowControls(true);
+  const triggerCastControl = useCallback(() => {
+    setShowCastControl(true);
     if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
     controlsTimeoutRef.current = setTimeout(() => {
-      setShowControls(false);
+      setShowCastControl(false);
     }, 4000);
   }, []);
-
-  const toggleFullscreen = async () => {
-    if (!player) return;
-    try {
-      if (isFullscreen) {
-        setIsFullscreen(false);
-        if (ScreenOrientation) {
-          await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-        }
-      } else {
-        setIsFullscreen(true);
-        if (ScreenOrientation) {
-          await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
-        }
-        player.presentFullscreen();
-      }
-    } catch (e) {}
-    triggerControls();
-  };
 
   const handleCast = () => {
     if (GoogleCastPkg) {
@@ -308,7 +289,7 @@ function ExpoVideoPlayer({
 
     if (readyTimerRef.current) clearTimeout(readyTimerRef.current);
     if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
-    triggerControls();
+    triggerCastControl();
 
     const checkStatus = (status?: string, err?: any) => {
       const s = status ?? player?.status;
@@ -370,37 +351,23 @@ function ExpoVideoPlayer({
       if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
       if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
     };
-  }, [url, onError, player, triggerControls]);
+  }, [url, onError, player, triggerCastControl]);
 
   return (
-    <Pressable style={{ flex: 1 }} onPress={triggerControls}>
+    <Pressable style={{ flex: 1 }} onPress={triggerCastControl}>
       <VideoView
         style={{ flex: 1 }}
         player={player}
         contentFit="cover"
-        nativeControls={false}
-        // UYARI VEREN allowsFullscreen SİLİNDİ MÜDÜR
+        nativeControls={true} // 🚀 MÜDÜR İLERLEME ÇUBUĞU, DURAKLATMA, SANİYE VE ÇARK BURAYLA GERİ GELDİ!
       />
       
-      {ready && showControls && (
-        <View style={styles.vlcUiOverlay} pointerEvents="box-none">
-          <View style={[styles.vlcUiTop, { justifyContent: 'flex-end' }]} pointerEvents="box-none">
-            <Pressable onPress={handleCast} style={styles.uiCircleBtn}>
-              <Ionicons name="tv-outline" size={20} color="#fff" />
-            </Pressable>
-          </View>
-          
-          <View style={styles.vlcUiCenter} pointerEvents="box-none">
-            <Pressable onPress={() => { player?.isPlaying ? player?.pause() : player?.play(); triggerControls(); }} style={[styles.uiCircleBtn, { width: 60, height: 60, borderRadius: 30 }]}>
-              <Ionicons name={player?.isPlaying ? "pause" : "play"} size={32} color="#fff" />
-            </Pressable>
-          </View>
-
-          <View style={[styles.vlcUiBottom, { justifyContent: 'flex-end' }]} pointerEvents="box-none">
-            <Pressable onPress={toggleFullscreen} style={styles.uiCircleBtn}>
-              <Ionicons name={isFullscreen ? "contract" : "expand"} size={22} color="#fff" />
-            </Pressable>
-          </View>
+      {/* Yerel kontroller açıkken TV yansıtma butonunu sağ üste şık bir katman olarak yerleştiriyoruz kanka */}
+      {ready && showCastControl && (
+        <View style={styles.expoCastOverlay} pointerEvents="box-none">
+          <Pressable onPress={handleCast} style={[styles.uiCircleBtn, { marginTop: 10, marginRight: 10 }]}>
+            <Ionicons name="tv-outline" size={20} color="#fff" />
+          </Pressable>
         </View>
       )}
 
@@ -684,7 +651,6 @@ function VlcPlayer({
           setTimeout(fetchTracks, 1500);
         }}
         onBuffering={(e: any) => {
-          // VLC'den gelen 0 veya false ise buffer bitti demektir kanka.
           const isNotBuffering = e?.isBuffering === 0 || e?.isBuffering === false;
 
           if (isNotBuffering) {
@@ -702,7 +668,6 @@ function VlcPlayer({
                   vlcRef.current?.seekTo?.(currentTime + 1500); 
                 } catch {}
                 
-                // Üst üste log basmasını engellemek için biraz gecikmeli sıfırlıyoruz.
                 setTimeout(() => {
                   recoveryTimerRef.current = null;
                 }, 2000);
@@ -714,15 +679,14 @@ function VlcPlayer({
           if (e?.currentTime !== undefined) setCurrentTime(e.currentTime);
           if (e?.duration !== undefined) setTotalTime(e.duration);
 
-          // 🎯 EFSANE KESİN ÇÖZÜM:
-          // Eğer VLC saniye saniye ilerliyorsa yayın kesinlikle oynuyordur! 
-          // Yazı ekranda mahsur kaldıysa acımasızca gizle.
+          // 🎯 EN KESİN ÇÖZÜM:
+          // Eğer VLC saniyeleri ilerletiyorsa görüntü kesin oynuyordur.
+          // Yazı kalıntılarını zorla kapatıp sıfırlıyoruz müdür!
           setIsRecovering((prev) => {
             if (prev) return false; 
             return prev;
           });
 
-          // Video ilerlerken arkada asılı kalan recovery sayacı varsa onu da çöpe at
           if (recoveryTimerRef.current) {
             clearTimeout(recoveryTimerRef.current);
             recoveryTimerRef.current = null;
@@ -989,4 +953,10 @@ const styles = StyleSheet.create({
   trackItemActive: { backgroundColor: "#ff9f43" },
   trackText: { color: "#fff", fontSize: 13, flex: 1 },
   trackTextActive: { color: "#000", fontWeight: "700" },
+  expoCastOverlay: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    zIndex: 99,
+  }
 });
